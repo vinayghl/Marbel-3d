@@ -18,7 +18,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Oxanium:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./style.css" />
@@ -34,7 +34,7 @@
       <div class="loading-card">
         <div class="loading-spinner" aria-hidden="true"></div>
         <h1 class="loading-title">Marble Rush 3D</h1>
-        <p id="loading-status" class="loading-subtitle">Initializing 3D engine &amp; Rapier physics...</p>
+        <p id="loading-status" class="loading-subtitle">Preparing terrain, graphics &amp; physics...</p>
       </div>
     </div>
 
@@ -92,6 +92,10 @@
             <span id="hud-speed" class="telemetry-value mono">0.0 m/s</span>
           </div>
           <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording full gameplay video">REC</span>
+          <span id="hud-replay-badge" class="replay-moment-badge hidden">
+            <span class="replay-pill-tag">REPLAY</span>
+            <span id="hud-replay-moment-text">Auto Director · Launch</span>
+          </span>
         </div>
 
         <div class="top-zone-right">
@@ -100,8 +104,16 @@
           <button id="btn-resume-race" class="btn btn-primary hidden" type="button">Resume</button>
           <button id="btn-restart-race" class="btn btn-surface" type="button">Restart</button>
           <button
-            id="btn-view-results"
+            id="btn-cinematic-replay"
             class="btn btn-accent hidden"
+            type="button"
+            title="Watch auto-cut Cinematic Replay of intense physics moments"
+          >
+            Cinematic Replay
+          </button>
+          <button
+            id="btn-view-results"
+            class="btn btn-surface hidden"
             type="button"
           >
             Results
@@ -110,10 +122,10 @@
             id="btn-toggle-quality"
             class="btn btn-icon"
             type="button"
-            title="Toggle 4K Ultra Post-Processing"
-            aria-label="Toggle 4K Graphics Quality"
+            title="Toggle High Detail Rendering"
+            aria-label="Toggle Rendering Detail"
           >
-            4K Ultra
+            High Detail
           </button>
           <button
             id="btn-toggle-sound"
@@ -237,17 +249,31 @@
             </div>
 
             <div class="field-group">
-              <label class="field-label-block">Arena Map &amp; Environment</label>
+              <label class="field-label-block">Colour Darkness</label>
+              <div class="preset-row" id="darkness-presets">
+                <button type="button" class="seg-btn active" data-darkness="standard">Standard</button>
+                <button type="button" class="seg-btn" data-darkness="deep">Deep</button>
+                <button type="button" class="seg-btn" data-darkness="ultra">Ultra Dark</button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">World Territory</label>
               <div class="grid-3-btns" id="map-preset-group">
-                <button type="button" class="seg-btn active" data-map="alpine">Alpine</button>
-                <button type="button" class="seg-btn" data-map="sunset">Sunset</button>
-                <button type="button" class="seg-btn" data-map="cyber">Neon Night</button>
-                <button type="button" class="seg-btn" data-map="arctic">Polar Ice</button>
-                <button type="button" class="seg-btn span-2" data-map="caldera">Volcanic Caldera</button>
+                <button type="button" class="seg-btn span-3 active" data-map="expedition">All Territories</button>
+                <button type="button" class="seg-btn" data-map="alpine">Alpine</button>
+                <button type="button" class="seg-btn" data-map="canyon">Red Canyon</button>
+                <button type="button" class="seg-btn" data-map="coastal">Coastal</button>
+                <button type="button" class="seg-btn" data-map="arctic">Nordic Fjord</button>
+                <button type="button" class="seg-btn" data-map="savanna">Savanna</button>
+                <button type="button" class="seg-btn" data-map="volcanic">Volcanic</button>
+                <button type="button" class="seg-btn" data-map="bamboo">Highlands</button>
+                <button type="button" class="seg-btn" data-map="badlands">Golden Dunes</button>
+                <button type="button" class="seg-btn" data-map="autumn">Autumn Woods</button>
               </div>
               <label class="checkbox-label" for="input-cycle-map">
                 <input id="input-cycle-map" type="checkbox" checked />
-                <span>Change map on Generate New Track</span>
+                <span>Rotate territory on Generate New Track</span>
               </label>
             </div>
 
@@ -258,6 +284,10 @@
                 <button type="button" class="seg-btn" data-track="curved">Curved</button>
                 <button type="button" class="seg-btn" data-track="spiral">Spiral</button>
                 <button type="button" class="seg-btn" data-track="multilane">Multi-Lane</button>
+                <button type="button" class="seg-btn" data-track="zigzag">Zig-Zag</button>
+                <button type="button" class="seg-btn" data-track="rollercoaster">Drop &amp; Wave</button>
+                <button type="button" class="seg-btn" data-track="chicane">Chicanes</button>
+                <button type="button" class="seg-btn" data-track="split">Split Track</button>
                 <button type="button" class="seg-btn span-2" data-track="mixed">
                   Mixed Obstacle Course
                 </button>
@@ -400,12 +430,11 @@
               <label class="field-label-block">Colour Presets</label>
               <div class="grid-2-btns" id="color-presets-group">
                 <button type="button" class="seg-btn active" data-palette="grandprix">Grand Prix</button>
-                <button type="button" class="seg-btn" data-palette="mineral">Mineral</button>
+                <button type="button" class="seg-btn" data-palette="mineral">Mineral Stone</button>
                 <button type="button" class="seg-btn" data-palette="contrast">High Contrast</button>
-                <button type="button" class="seg-btn" data-palette="pastel">Pastel Ceramic</button>
-                <button type="button" class="seg-btn span-2" data-palette="steel">
-                  Metallic &amp; Carbon
-                </button>
+                <button type="button" class="seg-btn" data-palette="pastel">Ceramic Glaze</button>
+                <button type="button" class="seg-btn" data-palette="steel">Brushed Metals</button>
+                <button type="button" class="seg-btn" data-palette="ultradark">Ultra Dark</button>
               </div>
             </div>
 
@@ -470,24 +499,17 @@
         </div>
       </div>
 
-      <!-- Cinematic Letterbox Bars (active in Director + Zen Mode) -->
-      <div id="cinema-bars" class="cinema-bars hidden" aria-hidden="true">
-        <div class="cinema-bar top"></div>
-        <div class="cinema-bar bottom"></div>
-      </div>
-
       <!-- Bottom Camera Mode & Simulation Dock -->
       <div id="camera-dock" aria-label="Camera Mode Controls">
         <div class="camera-dock-inner">
           <span class="dock-label">Camera</span>
           <div class="camera-modes-row" id="camera-mode-buttons">
             <button type="button" class="cam-btn active" data-cam="overview">Overview</button>
-            <button type="button" class="cam-btn" data-cam="director">Director</button>
+            <button type="button" class="cam-btn" data-cam="director">Broadcast</button>
             <button type="button" class="cam-btn" data-cam="leader">Follow Leader</button>
-            <button type="button" class="cam-btn" data-cam="selected">Follow Ball</button>
             <button type="button" class="cam-btn" data-cam="topdown">Top-Down</button>
             <button type="button" class="cam-btn" data-cam="finish">Finish Line</button>
-            <button type="button" class="cam-btn" data-cam="free">Free Camera</button>
+            <button type="button" class="cam-btn" data-cam="free">Free Roam</button>
           </div>
           <button
             id="btn-cycle-shot"
@@ -497,20 +519,84 @@
           >
             Angle: Chase
           </button>
-          <span id="camera-shot-label" class="camera-shot-tag hidden">Hero Dolly</span>
-          <div id="follow-ball-picker" class="follow-picker">
-            <label for="select-follow-ball" class="sr-only">Select Ball to Follow</label>
-            <select id="select-follow-ball" class="ball-select"></select>
-          </div>
+          <span id="camera-shot-label" class="camera-shot-tag hidden">Wide Dolly</span>
           <button id="btn-hide-hud" class="cam-btn cam-btn-subtle" type="button" title="Toggle HUD (H)">
-            Zen Mode
+            Hide HUD
           </button>
         </div>
       </div>
 
-      <!-- Restore HUD button when in Zen Mode -->
+      <!-- Cinematic Replay Control & Highlight Timeline Dock -->
+      <div id="replay-dock" class="replay-dock hidden" aria-label="Cinematic Replay Controls">
+        <div class="replay-timeline-row">
+          <span id="replay-shot-badge" class="replay-shot-chip">Auto Director</span>
+          <div
+            id="replay-scrubber-wrap"
+            class="replay-scrubber"
+            role="slider"
+            aria-label="Replay Timeline"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+            tabindex="0"
+          >
+            <div class="replay-scrubber-track">
+              <div id="replay-progress-fill" class="replay-scrubber-fill"></div>
+              <div id="replay-markers" class="replay-markers"></div>
+              <div id="replay-scrubber-thumb" class="replay-scrubber-thumb"></div>
+            </div>
+          </div>
+          <span id="replay-time-readout" class="replay-time-readout mono">00:00.0 / 00:00.0</span>
+        </div>
+
+        <div class="replay-controls-row">
+          <div class="replay-ctrl-group">
+            <button id="btn-replay-play" class="cam-btn active" type="button">Pause</button>
+            <button id="btn-replay-prev-hl" class="cam-btn" type="button" title="Jump to previous intense physics moment">
+              &lsaquo; Prev Moment
+            </button>
+            <button id="btn-replay-next-hl" class="cam-btn" type="button" title="Jump to next intense physics moment">
+              Next Moment &rsaquo;
+            </button>
+          </div>
+
+          <div class="replay-ctrl-group">
+            <span class="dock-label">Speed</span>
+            <div id="replay-speed-group" class="replay-speed-group">
+              <button type="button" class="cam-btn" data-rspeed="0.5">0.5x</button>
+              <button type="button" class="cam-btn active" data-rspeed="1">1x</button>
+              <button type="button" class="cam-btn" data-rspeed="1.5">1.5x</button>
+              <button type="button" class="cam-btn" data-rspeed="2">2x</button>
+            </div>
+          </div>
+
+          <div class="replay-ctrl-group">
+            <button
+              id="btn-replay-slowmo"
+              class="cam-btn active"
+              type="button"
+              title="Automatically slow down time during major crashes and photo finishes"
+            >
+              Auto Slow-Mo
+            </button>
+            <button
+              id="btn-replay-autocam"
+              class="cam-btn active"
+              type="button"
+              title="Toggle automatic highlight camera cuts vs manual camera control"
+            >
+              Auto Cuts
+            </button>
+            <button id="btn-replay-exit" class="cam-btn cam-btn-exit" type="button">
+              Exit Replay
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Restore HUD button when HUD is hidden -->
       <button id="btn-show-hud" class="btn btn-surface hidden" type="button">
-        Show Controls (H)
+        Show HUD (H)
       </button>
 
       <!-- Countdown Overlay (3, 2, 1, GO!) -->
@@ -585,6 +671,9 @@
         </div>
 
         <div class="results-actions">
+          <button id="btn-results-cinematic-replay" class="btn btn-accent" type="button">
+            Cinematic Replay
+          </button>
           <button id="btn-results-race-again" class="btn btn-primary" type="button">
             Race Again
           </button>

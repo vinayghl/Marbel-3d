@@ -1,73 +1,15 @@
 import * as THREE from 'https://esm.sh/three@0.170.0';
 import { OrbitControls } from 'https://esm.sh/three@0.170.0/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'https://esm.sh/three@0.170.0/examples/jsm/environments/RoomEnvironment.js';
-import { EffectComposer } from 'https://esm.sh/three@0.170.0/examples/jsm/postprocessing/EffectComposer.js';
-import { RenderPass } from 'https://esm.sh/three@0.170.0/examples/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'https://esm.sh/three@0.170.0/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'https://esm.sh/three@0.170.0/examples/jsm/postprocessing/ShaderPass.js';
-import { OutputPass } from 'https://esm.sh/three@0.170.0/examples/jsm/postprocessing/OutputPass.js';
 import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.14.0';
 
 // ============================================================================
-// Constants, Post-Processing Shaders & Presets
+// Constants & Presets
 // ============================================================================
 const BALL_RADIUS = 0.4;
 const FIXED_DT = 1 / 120;
-const MAX_SUBSTEPS_PER_FRAME = 10;
+const MAX_SUBSTEPS_PER_FRAME = 30;
 const FOLLOW_SHOT_ANGLES = ['Chase', 'Low Bumper', 'Side Drone', 'Reverse Cam'];
-
-const CinematicLensShader = {
-  uniforms: {
-    tDiffuse: { value: null },
-    uTexelSize: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
-    uSharpness: { value: 0.24 },
-    uAberration: { value: 0.0012 },
-    uVignette: { value: 0.16 },
-  },
-  vertexShader: `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform vec2 uTexelSize;
-    uniform float uSharpness;
-    uniform float uAberration;
-    uniform float uVignette;
-    varying vec2 vUv;
-
-    void main() {
-      vec2 offset = vUv - 0.5;
-      float radial = dot(offset, offset);
-
-      // Subtle optical edge chromatic dispersion scaled by speed (UVs clamped cleanly)
-      vec2 ca = offset * uAberration * (0.4 + radial * 2.4);
-      vec3 base = texture2D(tDiffuse, vUv).rgb;
-      float r = texture2D(tDiffuse, clamp(vUv + ca, 0.001, 0.999)).r;
-      float b = texture2D(tDiffuse, clamp(vUv - ca, 0.001, 0.999)).b;
-      vec3 col = vec3(r, base.g, b);
-
-      // 4K crispness unsharp clarity filter in linear space
-      if (uSharpness > 0.001) {
-        vec3 n = texture2D(tDiffuse, clamp(vUv + vec2(0.0, uTexelSize.y), 0.001, 0.999)).rgb;
-        vec3 s = texture2D(tDiffuse, clamp(vUv - vec2(0.0, uTexelSize.y), 0.001, 0.999)).rgb;
-        vec3 e = texture2D(tDiffuse, clamp(vUv + vec2(uTexelSize.x, 0.0), 0.001, 0.999)).rgb;
-        vec3 w = texture2D(tDiffuse, clamp(vUv - vec2(uTexelSize.x, 0.0), 0.001, 0.999)).rgb;
-        vec3 blur = (n + s + e + w) * 0.25;
-        vec3 detail = clamp(col - blur, -0.14, 0.14);
-        col += detail * uSharpness;
-      }
-
-      // Clean broadcast optical vignette (preserve HDR highlights for OutputPass)
-      float vig = 1.0 - smoothstep(0.28, 0.95, radial * 1.65) * uVignette;
-      col *= vig;
-      gl_FragColor = vec4(clamp(col, vec3(0.0), vec3(32.0)), 1.0);
-    }
-  `,
-};
 
 const GRAVITY_PRESETS = {
   moon: { label: 'Moon', value: 3.7 },
@@ -111,20 +53,64 @@ const COLOR_PALETTES = {
     '#ea580c', '#0891b2', '#9f1239', '#4338ca', '#15803d',
   ],
   contrast: [
-    '#ff2a54', '#00e5ff', '#ffe600', '#00ff88', '#ff7b00',
-    '#b366ff', '#ffffff', '#ff00aa', '#38bdf8', '#a3e635',
-    '#fb7185', '#2dd4bf', '#facc15', '#c084fc', '#fb923c',
+    '#d62828', '#0077b6', '#e9c46a', '#2a9d8f', '#e76f51',
+    '#6d597a', '#f4f1de', '#b5179e', '#1d3557', '#606c38',
+    '#bc6c25', '#457b9d', '#e63946', '#4a4e69', '#f4a261',
   ],
   pastel: [
-    '#fda4af', '#93c5fd', '#fcd34d', '#6ee7b7', '#f9a8d4',
-    '#67e8f9', '#fdba74', '#c4b5fd', '#bef264', '#5eead4',
-    '#fca5a5', '#a5b4fc', '#fde047', '#d8b4fe', '#7dd3fc',
+    '#e8a598', '#89b0ae', '#f3d58d', '#81b29a', '#d4a5a5',
+    '#98c1d9', '#f2cc8f', '#b5a8d5', '#a3b18a', '#7fb3b5',
+    '#e29578', '#8e9aaf', '#ede0d4', '#cbb2d6', '#90b4ce',
   ],
   steel: [
-    '#f59e0b', '#e2e8f0', '#38bdf8', '#f43f5e', '#94a3b8',
-    '#fbbf24', '#cbd5e1', '#0ea5e9', '#fb7185', '#64748b',
-    '#fcd34d', '#f8fafc', '#22d3ee', '#e11d48', '#475569',
+    '#c97b2b', '#d9dde2', '#3a7ca5', '#b93848', '#7d8590',
+    '#d9a441', '#bcc3cc', '#2c668d', '#c45b67', '#5c646d',
+    '#dfc070', '#eef1f4', '#4d8fae', '#a32c3b', '#41474e',
   ],
+  ultradark: [
+    '#b80014', '#0038d4', '#007a24', '#6200b8', '#c93800',
+    '#b87400', '#a80063', '#006e7a', '#8c0028', '#1452cc',
+    '#4a7a00', '#42009e', '#b81c00', '#005c9e', '#8f3b00',
+  ],
+};
+
+const COLOR_DARKNESS_PRESETS = {
+  standard: {
+    label: 'Standard',
+    satBoost: 1.0,
+    skyMul: 1.0,
+    fogMul: 1.0,
+    terrainMul: 1.0,
+    trackMul: 1.0,
+    hemiMul: 1.0,
+    keyMul: 1.0,
+    rimMul: 1.0,
+    exposureMul: 1.0,
+  },
+  deep: {
+    label: 'Deep',
+    satBoost: 1.42,
+    skyMul: 0.68,
+    fogMul: 0.68,
+    terrainMul: 0.72,
+    trackMul: 0.72,
+    hemiMul: 0.82,
+    keyMul: 1.06,
+    rimMul: 1.2,
+    exposureMul: 0.96,
+  },
+  ultra: {
+    label: 'Ultra Dark',
+    satBoost: 1.85,
+    skyMul: 0.44,
+    fogMul: 0.44,
+    terrainMul: 0.48,
+    trackMul: 0.48,
+    hemiMul: 0.62,
+    keyMul: 1.15,
+    rimMul: 1.4,
+    exposureMul: 0.95,
+  },
 };
 
 const DEFAULT_CONFIG = {
@@ -132,7 +118,8 @@ const DEFAULT_CONFIG = {
   speedMultiplier: 1.0,
   distancePreset: '100',
   distanceMeters: 100,
-  mapPreset: 'alpine',
+  colorDarkness: 'standard',
+  mapPreset: 'expedition',
   cycleMapOnNewTrack: true,
   trackType: 'straight',
   trackWidth: 10,
@@ -147,133 +134,249 @@ const DEFAULT_CONFIG = {
   allowDuplicateColors: false,
 };
 
-const MAP_ORDER = ['alpine', 'sunset', 'cyber', 'arctic', 'caldera'];
+const TERRITORY_ORDER = [
+  'expedition',
+  'alpine',
+  'canyon',
+  'coastal',
+  'arctic',
+  'savanna',
+  'volcanic',
+  'bamboo',
+  'badlands',
+  'autumn',
+];
 
-const ENVIRONMENT_MAPS = {
+const TERRITORIES = {
+  expedition: {
+    label: 'All Territories',
+    skyStops: ['#2864a8', '#5b93cd', '#a8cce6', '#dde8ee'],
+    fogColor: 0xc2d5e0,
+    fogDensity: 0.00118,
+    hemiSky: 0xd4e8ff,
+    hemiGround: 0x3b352c,
+    hemiIntensity: 0.94,
+    keyColor: 0xfff1d6,
+    keyIntensity: 2.85,
+    rimColor: 0x9ec6eb,
+    rimIntensity: 0.45,
+    exposure: 1.0,
+    trackBase: '#2d2f33',
+    trackLine: 'rgba(236, 232, 224, 0.78)',
+    curbPrimary: '#c63d2d',
+    curbSecondary: '#eae5dc',
+    railColor: 0x6f767e,
+    pylonColor: 0x4c5258,
+    hasWater: true,
+    waterColor: 0x205d79,
+    waterLevelOffset: -2.6,
+  },
   alpine: {
-    label: 'Alpine Twilight',
-    skyStops: ['#050a14', '#0f1b2e', '#233b59', '#0c111a'],
-    fogColor: 0x0d1522,
-    fogDensity: 0.0034,
-    hemiSky: 0x9ec5ff,
-    hemiGround: 0x182230,
-    hemiIntensity: 1.0,
-    keyColor: 0xfff2dc,
-    keyIntensity: 2.35,
-    rimColor: 0x38bdf8,
-    rimIntensity: 0.85,
-    exposure: 1.12,
-    groundBase: '#0b1018',
-    groundGrid: 'rgba(148, 163, 184, 0.09)',
-    trackBase: '#1b212b',
-    trackLine: 'rgba(245, 158, 11, 0.65)',
-    curbColor: 0xf59e0b,
-    curbEmissive: 0xd97706,
-    railColor: 0x64748b,
-    pylonColor: 0x1e293b,
-    landmarkKind: 'peaks',
-    landmarkColor: 0x26354a,
-    landmarkAccent: 0xcbd5e1,
+    label: 'Alpine Valley',
+    skyStops: ['#225b99', '#548ec9', '#9bc3e3', '#d6e5ed'],
+    fogColor: 0xbacfd9,
+    fogDensity: 0.00125,
+    hemiSky: 0xd8ecff,
+    hemiGround: 0x31402a,
+    hemiIntensity: 0.96,
+    keyColor: 0xfff3de,
+    keyIntensity: 2.85,
+    rimColor: 0xa4cbe8,
+    rimIntensity: 0.44,
+    exposure: 1.0,
+    trackBase: '#2f3237',
+    trackLine: 'rgba(238, 235, 228, 0.78)',
+    curbPrimary: '#bf3b2b',
+    curbSecondary: '#eae6de',
+    railColor: 0x6e757d,
+    pylonColor: 0x4a5056,
+    hasWater: true,
+    waterColor: 0x246278,
+    waterLevelOffset: -3.2,
   },
-  sunset: {
-    label: 'Canyon Sunset',
-    skyStops: ['#160c18', '#4c1d2b', '#b4532a', '#1f1210'],
-    fogColor: 0x2a1618,
-    fogDensity: 0.0032,
-    hemiSky: 0xffb37a,
-    hemiGround: 0x2b1712,
-    hemiIntensity: 1.05,
-    keyColor: 0xffcf96,
-    keyIntensity: 2.5,
-    rimColor: 0xf97316,
-    rimIntensity: 0.9,
-    exposure: 1.15,
-    groundBase: '#1c120e',
-    groundGrid: 'rgba(251, 146, 60, 0.09)',
-    trackBase: '#27201e',
-    trackLine: 'rgba(251, 146, 60, 0.72)',
-    curbColor: 0xf97316,
-    curbEmissive: 0xea580c,
-    railColor: 0x92400e,
-    pylonColor: 0x291c18,
-    landmarkKind: 'mesas',
-    landmarkColor: 0x5c2d1f,
-    landmarkAccent: 0x9a4e32,
+  canyon: {
+    label: 'Red Canyon',
+    skyStops: ['#2861a1', '#6999ca', '#c7c2b0', '#e6cca9'],
+    fogColor: 0xd5bda2,
+    fogDensity: 0.00115,
+    hemiSky: 0xffe9d2,
+    hemiGround: 0x5c3624,
+    hemiIntensity: 0.92,
+    keyColor: 0xffebd0,
+    keyIntensity: 2.95,
+    rimColor: 0xb8cde0,
+    rimIntensity: 0.42,
+    exposure: 1.0,
+    trackBase: '#332e2b',
+    trackLine: 'rgba(240, 231, 214, 0.76)',
+    curbPrimary: '#b84228',
+    curbSecondary: '#eadfc8',
+    railColor: 0x766c63,
+    pylonColor: 0x57483e,
+    hasWater: false,
+    waterColor: 0x2c6468,
+    waterLevelOffset: -9.5,
   },
-  cyber: {
-    label: 'Neon Night',
-    skyStops: ['#04040c', '#0b0a22', '#17133a', '#06060f'],
-    fogColor: 0x070716,
-    fogDensity: 0.0038,
-    hemiSky: 0x6366f1,
-    hemiGround: 0x0f172a,
-    hemiIntensity: 0.9,
-    keyColor: 0xe0f2fe,
-    keyIntensity: 2.1,
-    rimColor: 0xec4899,
-    rimIntensity: 1.1,
-    exposure: 1.16,
-    groundBase: '#060711',
-    groundGrid: 'rgba(56, 189, 248, 0.12)',
-    trackBase: '#111623',
-    trackLine: 'rgba(34, 211, 238, 0.75)',
-    curbColor: 0x22d3ee,
-    curbEmissive: 0x06b6d4,
-    railColor: 0x475569,
-    pylonColor: 0x161b2e,
-    landmarkKind: 'towers',
-    landmarkColor: 0x13172b,
-    landmarkAccent: 0x22d3ee,
+  coastal: {
+    label: 'Coastal Cliffs',
+    skyStops: ['#1f5899', '#528ec9', '#9ecbe6', '#d8ebf2'],
+    fogColor: 0xc5dbe6,
+    fogDensity: 0.00112,
+    hemiSky: 0xdaf0ff,
+    hemiGround: 0x424a38,
+    hemiIntensity: 0.98,
+    keyColor: 0xfff5e4,
+    keyIntensity: 2.9,
+    rimColor: 0x9bd0eb,
+    rimIntensity: 0.46,
+    exposure: 1.0,
+    trackBase: '#2f3338',
+    trackLine: 'rgba(242, 240, 234, 0.8)',
+    curbPrimary: '#c2432f',
+    curbSecondary: '#ece8df',
+    railColor: 0x767d84,
+    pylonColor: 0x555b60,
+    hasWater: true,
+    waterColor: 0x1a5b7d,
+    waterLevelOffset: -1.85,
   },
   arctic: {
-    label: 'Polar Ice',
-    skyStops: ['#081826', '#123249', '#2b5e78', '#0c1c28'],
-    fogColor: 0x102838,
-    fogDensity: 0.0028,
-    hemiSky: 0xbae6fd,
-    hemiGround: 0x1e3a4c,
-    hemiIntensity: 1.25,
-    keyColor: 0xf8fafc,
-    keyIntensity: 2.4,
-    rimColor: 0x67e8f9,
-    rimIntensity: 0.95,
-    exposure: 1.18,
-    groundBase: '#10212e',
-    groundGrid: 'rgba(186, 230, 253, 0.12)',
-    trackBase: '#1e2f3d',
-    trackLine: 'rgba(103, 232, 249, 0.72)',
-    curbColor: 0x38bdf8,
-    curbEmissive: 0x0284c7,
-    railColor: 0x94a3b8,
-    pylonColor: 0x1e3547,
-    landmarkKind: 'glaciers',
-    landmarkColor: 0x36607a,
-    landmarkAccent: 0xbae6fd,
+    label: 'Nordic Fjord',
+    skyStops: ['#244c7a', '#537da8', '#9ebbd4', '#cfdce6'],
+    fogColor: 0xc4d4df,
+    fogDensity: 0.0012,
+    hemiSky: 0xe3f1ff,
+    hemiGround: 0x4a5562,
+    hemiIntensity: 1.02,
+    keyColor: 0xf6f9ff,
+    keyIntensity: 2.75,
+    rimColor: 0xb8d4eb,
+    rimIntensity: 0.48,
+    exposure: 0.98,
+    trackBase: '#31373e',
+    trackLine: 'rgba(235, 240, 245, 0.8)',
+    curbPrimary: '#a63e34',
+    curbSecondary: '#e8edf2',
+    railColor: 0x79838e,
+    pylonColor: 0x46505b,
+    hasWater: true,
+    waterColor: 0x1c4962,
+    waterLevelOffset: -2.8,
   },
-  caldera: {
-    label: 'Volcanic Caldera',
-    skyStops: ['#0d0606', '#260c0a', '#4a1810', '#120807'],
-    fogColor: 0x1a0b09,
-    fogDensity: 0.0036,
-    hemiSky: 0xfb923c,
-    hemiGround: 0x260c08,
+  savanna: {
+    label: 'Savanna Plains',
+    skyStops: ['#2b649e', '#6f9bc4', '#d1c49f', '#eadbb7'],
+    fogColor: 0xd6c7a8,
+    fogDensity: 0.00112,
+    hemiSky: 0xfff0d6,
+    hemiGround: 0x594a30,
+    hemiIntensity: 0.94,
+    keyColor: 0xffe8c2,
+    keyIntensity: 2.95,
+    rimColor: 0xb2cce0,
+    rimIntensity: 0.4,
+    exposure: 1.0,
+    trackBase: '#33302b',
+    trackLine: 'rgba(240, 232, 212, 0.76)',
+    curbPrimary: '#b8492a',
+    curbSecondary: '#eae1cc',
+    railColor: 0x756c5e,
+    pylonColor: 0x52493d,
+    hasWater: true,
+    waterColor: 0x336355,
+    waterLevelOffset: -4.2,
+  },
+  volcanic: {
+    label: 'Volcanic Basalt',
+    skyStops: ['#1b232e', '#3a424d', '#6b5f58', '#8a7365'],
+    fogColor: 0x6f6058,
+    fogDensity: 0.00145,
+    hemiSky: 0xb8c0ca,
+    hemiGround: 0x261d19,
+    hemiIntensity: 0.76,
+    keyColor: 0xffd5b0,
+    keyIntensity: 2.65,
+    rimColor: 0x8f9dad,
+    rimIntensity: 0.56,
+    exposure: 0.94,
+    trackBase: '#222326',
+    trackLine: 'rgba(222, 214, 202, 0.72)',
+    curbPrimary: '#943522',
+    curbSecondary: '#cbc5ba',
+    railColor: 0x545960,
+    pylonColor: 0x34373b,
+    hasWater: false,
+    waterColor: 0x283238,
+    waterLevelOffset: -9.5,
+  },
+  bamboo: {
+    label: 'Misty Highlands',
+    skyStops: ['#2c5973', '#618ea1', '#a7c4c2', '#d2ded9'],
+    fogColor: 0xbed0cc,
+    fogDensity: 0.00142,
+    hemiSky: 0xdcf0eb,
+    hemiGround: 0x283b2c,
     hemiIntensity: 0.95,
-    keyColor: 0xffedd5,
-    keyIntensity: 2.25,
-    rimColor: 0xef4444,
-    rimIntensity: 1.05,
-    exposure: 1.14,
-    groundBase: '#120a09',
-    groundGrid: 'rgba(239, 68, 68, 0.11)',
-    trackBase: '#1b1617',
-    trackLine: 'rgba(249, 115, 22, 0.72)',
-    curbColor: 0xf97316,
-    curbEmissive: 0xdc2626,
-    railColor: 0x57534e,
-    pylonColor: 0x231919,
-    landmarkKind: 'basalt',
-    landmarkColor: 0x291c1c,
-    landmarkAccent: 0xf97316,
+    keyColor: 0xfff4de,
+    keyIntensity: 2.65,
+    rimColor: 0x9ec9be,
+    rimIntensity: 0.45,
+    exposure: 0.98,
+    trackBase: '#2b3230',
+    trackLine: 'rgba(235, 238, 232, 0.78)',
+    curbPrimary: '#2f6e52',
+    curbSecondary: '#e5e8e1',
+    railColor: 0x62706b,
+    pylonColor: 0x3e4a46,
+    hasWater: true,
+    waterColor: 0x225a52,
+    waterLevelOffset: -3.0,
+  },
+  badlands: {
+    label: 'Golden Dunes',
+    skyStops: ['#2b69ab', '#699cd1', '#d6c59c', '#edd7ac'],
+    fogColor: 0xdec89e,
+    fogDensity: 0.00105,
+    hemiSky: 0xfff2d4,
+    hemiGround: 0x664e2c,
+    hemiIntensity: 0.96,
+    keyColor: 0xffebd1,
+    keyIntensity: 3.05,
+    rimColor: 0xb0cde6,
+    rimIntensity: 0.38,
+    exposure: 1.0,
+    trackBase: '#36322c',
+    trackLine: 'rgba(244, 236, 216, 0.78)',
+    curbPrimary: '#b56328',
+    curbSecondary: '#efe4cc',
+    railColor: 0x7c7160,
+    pylonColor: 0x594d3d,
+    hasWater: false,
+    waterColor: 0x2e6460,
+    waterLevelOffset: -9.5,
+  },
+  autumn: {
+    label: 'Autumn Timberland',
+    skyStops: ['#24568f', '#5787bd', '#b0c3cf', '#ded7c8'],
+    fogColor: 0xc9c6bc,
+    fogDensity: 0.00124,
+    hemiSky: 0xe6efff,
+    hemiGround: 0x473423,
+    hemiIntensity: 0.92,
+    keyColor: 0xffe8c7,
+    keyIntensity: 2.8,
+    rimColor: 0x9fc0de,
+    rimIntensity: 0.44,
+    exposure: 0.98,
+    trackBase: '#2d2f33',
+    trackLine: 'rgba(240, 234, 224, 0.78)',
+    curbPrimary: '#ad4424',
+    curbSecondary: '#eae3d6',
+    railColor: 0x6a6e72,
+    pylonColor: 0x47484b,
+    hasWater: true,
+    waterColor: 0x285469,
+    waterLevelOffset: -3.1,
   },
 };
 
@@ -286,6 +389,86 @@ function mulberry32(seed) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function hash2D(ix, iz, seed) {
+  let n = Math.imul(ix, 374761393) + Math.imul(iz, 668265263) + Math.imul(seed | 0, 1442695041);
+  n = (n ^ (n >>> 13)) | 0;
+  n = Math.imul(n, 1274126177);
+  return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+}
+
+function valueNoise2D(x, z, seed) {
+  const ix = Math.floor(x);
+  const iz = Math.floor(z);
+  const fx = x - ix;
+  const fz = z - iz;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uz = fz * fz * (3 - 2 * fz);
+  const a = hash2D(ix, iz, seed);
+  const b = hash2D(ix + 1, iz, seed);
+  const c = hash2D(ix, iz + 1, seed);
+  const d = hash2D(ix + 1, iz + 1, seed);
+  return a + (b - a) * ux + (c - a) * uz + (a - b - c + d) * ux * uz;
+}
+
+function fbm2D(x, z, seed, octaves = 4) {
+  let sum = 0;
+  let amp = 0.5;
+  let freq = 1.0;
+  let norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += valueNoise2D(x * freq, z * freq, seed + i * 97) * amp;
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2.04;
+  }
+  return sum / norm;
+}
+
+function evaluateTerritoryWeights(uProgress, x, z, mapKey, seed) {
+  const w = {
+    arctic: 0,
+    alpine: 0,
+    bamboo: 0,
+    canyon: 0,
+    badlands: 0,
+    autumn: 0,
+    savanna: 0,
+    volcanic: 0,
+    coastal: 0,
+  };
+  if (mapKey !== 'expedition') {
+    w[mapKey in w ? mapKey : 'alpine'] = 1.0;
+    return w;
+  }
+  // Smooth organic transition across all 9 open-world territories along the route
+  const warp = (fbm2D(x * 0.008, z * 0.008, seed + 19, 2) - 0.5) * 0.12;
+  const u = THREE.MathUtils.clamp(uProgress + warp, 0, 1);
+  const zones = [
+    { key: 'arctic', center: 0.04, width: 0.14 },
+    { key: 'alpine', center: 0.16, width: 0.14 },
+    { key: 'bamboo', center: 0.28, width: 0.14 },
+    { key: 'autumn', center: 0.40, width: 0.14 },
+    { key: 'canyon', center: 0.52, width: 0.14 },
+    { key: 'badlands', center: 0.64, width: 0.14 },
+    { key: 'savanna', center: 0.76, width: 0.14 },
+    { key: 'volcanic', center: 0.87, width: 0.14 },
+    { key: 'coastal', center: 0.97, width: 0.14 },
+  ];
+  let total = 0;
+  for (const zDef of zones) {
+    const d = Math.abs(u - zDef.center) / zDef.width;
+    const weight = d >= 1 ? 0 : Math.pow(1 - d * d, 2);
+    w[zDef.key] = weight;
+    total += weight;
+  }
+  if (total < 1e-4) {
+    w.alpine = 1;
+  } else {
+    for (const k of Object.keys(w)) w[k] /= total;
+  }
+  return w;
 }
 
 // ============================================================================
@@ -623,12 +806,15 @@ class SoundEngine {
 }
 
 // ============================================================================
-// Full Gameplay Video Recorder (Canvas + Procedural Audio -> WebM / MP4)
+// Full Gameplay Video Recorder (Direct Zero-Readback GPU Canvas Stream -> MP4 / WebM)
 // ============================================================================
 class GameplayRecorder {
   constructor(canvas, soundEngine) {
-    this.canvas = canvas;
+    this.sourceCanvas = canvas;
     this.soundEngine = soundEngine;
+    this.recordWidth = canvas ? canvas.width : 1920;
+    this.recordHeight = canvas ? canvas.height : 1080;
+    this.recordFps = isSoftwareGl ? 24 : 60;
     this.recorder = null;
     this.chunks = [];
     this.stream = null;
@@ -642,11 +828,15 @@ class GameplayRecorder {
 
   static pickSupportedMimeType() {
     if (typeof MediaRecorder === 'undefined') return null;
+    // Prefer hardware H.264 / fast VP8 so live gameplay stays butter-smooth at 60fps
     const candidates = [
+      { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' },
       { mime: 'video/mp4;codecs=avc1,mp4a.40.2', ext: 'mp4' },
       { mime: 'video/mp4', ext: 'mp4' },
-      { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
       { mime: 'video/webm;codecs=vp8,opus', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
       { mime: 'video/webm', ext: 'webm' },
     ];
     for (const c of candidates) {
@@ -658,8 +848,13 @@ class GameplayRecorder {
   isSupported() {
     return (
       typeof MediaRecorder !== 'undefined' &&
-      typeof this.canvas.captureStream === 'function'
+      this.sourceCanvas &&
+      typeof this.sourceCanvas.captureStream === 'function'
     );
+  }
+
+  captureFrame() {
+    // Direct GPU canvas.captureStream() samples WebGL frames natively with zero CPU readback stall
   }
 
   start() {
@@ -667,8 +862,10 @@ class GameplayRecorder {
     if (!this.isSupported()) return false;
 
     try {
-      const fps = isSoftwareGl ? 30 : 60;
-      const canvasStream = this.canvas.captureStream(fps);
+      this.recordWidth = this.sourceCanvas.width || 1920;
+      this.recordHeight = this.sourceCanvas.height || 1080;
+      this.recordFps = isSoftwareGl ? 24 : 60;
+      const canvasStream = this.sourceCanvas.captureStream(this.recordFps);
       const tracks = [...canvasStream.getVideoTracks()];
       const audioTrack = this.soundEngine.getAudioTrack();
       if (audioTrack) {
@@ -680,20 +877,32 @@ class GameplayRecorder {
       this.mimeType = picked?.mime || '';
       this.ext = picked?.ext || 'webm';
 
-      const options = this.mimeType
-        ? { mimeType: this.mimeType, videoBitsPerSecond: 6_000_000 }
-        : { videoBitsPerSecond: 6_000_000 };
-
       this.chunks = [];
-      this.recorder = new MediaRecorder(this.stream, options);
+      const bitrates = [12_000_000, 8_000_000, 5_000_000];
+      let created = null;
+      for (const bps of bitrates) {
+        try {
+          const opts = this.mimeType
+            ? { mimeType: this.mimeType, videoBitsPerSecond: bps }
+            : { videoBitsPerSecond: bps };
+          created = new MediaRecorder(this.stream, opts);
+          break;
+        } catch {
+          created = null;
+        }
+      }
+      if (!created) {
+        created = new MediaRecorder(this.stream);
+      }
+      this.recorder = created;
       this.recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
           this.chunks.push(e.data);
         }
       };
 
-      this.recorder.start(250);
       this.isRecording = true;
+      this.recorder.start(1000);
       return true;
     } catch (err) {
       console.warn('Video recording unavailable:', err);
@@ -728,7 +937,14 @@ class GameplayRecorder {
       this.isRecording = false;
       return Promise.resolve(
         this.recordedBlob
-          ? { blob: this.recordedBlob, url: this.recordedUrl, ext: this.ext }
+          ? {
+              blob: this.recordedBlob,
+              url: this.recordedUrl,
+              ext: this.ext,
+              width: this.recordWidth,
+              height: this.recordHeight,
+              fps: this.recordFps,
+            }
           : null
       );
     }
@@ -745,7 +961,14 @@ class GameplayRecorder {
         this.recordedUrl = URL.createObjectURL(blob);
         this.cleanupTracks();
         this.stopPromise = null;
-        resolve({ blob, url: this.recordedUrl, ext: this.ext });
+        resolve({
+          blob,
+          url: this.recordedUrl,
+          ext: this.ext,
+          width: this.recordWidth,
+          height: this.recordHeight,
+          fps: this.recordFps,
+        });
       };
       try {
         this.recorder.stop();
@@ -789,128 +1012,367 @@ class GameplayRecorder {
 }
 
 // ============================================================================
-// Pooled 3D Spark & Confetti Particle System (Zero-GC InstancedMesh)
+// Cinematic Physics Replay Recorder & Intense-Moment Director
 // ============================================================================
-class ParticlePool {
-  constructor(scene, maxCount = 220) {
-    this.maxCount = maxCount;
-    this.particles = [];
-    this.cursor = 0;
+class ReplaySystem {
+  constructor() {
+    this.sampleInterval = 1 / 30;
+    this.maxFrames = 12000;
+    this.reset();
+  }
 
-    const geo = new THREE.BoxGeometry(0.11, 0.11, 0.22);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.92,
+  reset() {
+    this.frames = [];
+    this.events = [];
+    this.audioCues = [];
+    this.highlights = [];
+    this.shots = [];
+    this.totalDuration = 0;
+    this.ballCount = 0;
+    this.hurdleCount = 0;
+    this.lastSampleTime = -1;
+    this.lastAudioCueAt = -1;
+    this.lastEventTimeByKey = new Map();
+    this.isPlaying = true;
+    this.currentTime = 0;
+    this.playbackSpeed = 1.0;
+    this.autoSlowMo = true;
+    this.autoDirector = true;
+    this.activeShotIdx = -1;
+    this.prevTimeForAudio = 0;
+  }
+
+  hasData() {
+    return this.frames.length >= 4 && this.totalDuration > 0.25;
+  }
+
+  captureFrame(simTime, balls, kinematicHurdles, startGate) {
+    if (this.frames.length >= this.maxFrames) return;
+    if (this.lastSampleTime >= 0 && simTime - this.lastSampleTime < this.sampleInterval * 0.92) {
+      return;
+    }
+    this.lastSampleTime = simTime;
+    const nBalls = balls.length;
+    const nHurdles = kinematicHurdles.length;
+    this.ballCount = nBalls;
+    this.hurdleCount = nHurdles;
+
+    const ballData = new Float32Array(nBalls * 8);
+    const ballProgress = new Float32Array(nBalls);
+    const ballRanks = new Uint8Array(nBalls);
+
+    for (let i = 0; i < nBalls; i++) {
+      const b = balls[i];
+      const p = b.body.translation();
+      const q = b.body.rotation();
+      const off = i * 8;
+      ballData[off] = p.x;
+      ballData[off + 1] = p.y;
+      ballData[off + 2] = p.z;
+      ballData[off + 3] = q.x;
+      ballData[off + 4] = q.y;
+      ballData[off + 5] = q.z;
+      ballData[off + 6] = q.w;
+      ballData[off + 7] = b.currentSpeed;
+      ballProgress[i] = b.progressMeters;
+      ballRanks[i] = b.rank;
+    }
+
+    const hurdleData = new Float32Array(nHurdles * 7);
+    for (let i = 0; i < nHurdles; i++) {
+      const h = kinematicHurdles[i];
+      const p = h.mesh.position;
+      const q = h.mesh.quaternion;
+      const off = i * 7;
+      hurdleData[off] = p.x;
+      hurdleData[off + 1] = p.y;
+      hurdleData[off + 2] = p.z;
+      hurdleData[off + 3] = q.x;
+      hurdleData[off + 4] = q.y;
+      hurdleData[off + 5] = q.z;
+      hurdleData[off + 6] = q.w;
+    }
+
+    this.frames.push({
+      t: simTime,
+      ballData,
+      ballProgress,
+      ballRanks,
+      hurdleData,
+      gateProgress: startGate ? startGate.openProgress : 1,
     });
-    this.mesh = new THREE.InstancedMesh(geo, mat, maxCount);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.mesh.frustumCulled = false;
+    this.totalDuration = Math.max(this.totalDuration, simTime);
+  }
 
-    this._dummy = new THREE.Object3D();
-    this._color = new THREE.Color();
+  recordAudioCue(time, kind, intensity = 0.5, subType = '') {
+    if (this.audioCues.length > 5000) return;
+    if (time - this.lastAudioCueAt < 0.032 && kind !== 'win') return;
+    this.lastAudioCueAt = time;
+    this.audioCues.push({ time, kind, intensity, subType });
+  }
 
-    for (let i = 0; i < maxCount; i++) {
-      this.particles.push({
-        active: false,
-        pos: new THREE.Vector3(),
-        vel: new THREE.Vector3(),
-        rot: new THREE.Euler(),
-        rotSpeed: new THREE.Vector3(),
-        life: 0,
-        maxLife: 1,
-        baseScale: 1,
-        gravity: 14,
+  recordEvent(ev) {
+    if (this.events.length > 1500) return;
+    // Merge dense collision clusters within 0.38s at same track region into a multi-ball clash
+    if (ev.type === 'pack_clash') {
+      for (let i = this.events.length - 1; i >= Math.max(0, this.events.length - 6); i--) {
+        const prev = this.events[i];
+        if (prev.type === 'pack_clash' && ev.time - prev.time < 0.38 && Math.abs(ev.s - prev.s) < 6) {
+          prev.intensity = Math.min(1.6, prev.intensity + 0.28);
+          prev.label = 'Multi-Ball Pileup';
+          if (ev.intensity > prev.intensity * 0.85) {
+            prev.primaryBallId = ev.primaryBallId;
+            prev.secondaryBallId = ev.secondaryBallId;
+            prev.worldPos.copy(ev.worldPos);
+          }
+          return;
+        }
+      }
+    }
+
+    const dedupeKey = `${ev.type}_${ev.primaryBallId}`;
+    const lastT = this.lastEventTimeByKey.get(dedupeKey) ?? -10;
+    if (ev.type !== 'finish' && ev.type !== 'lead_change' && ev.time - lastT < 0.75) {
+      return;
+    }
+    this.lastEventTimeByKey.set(dedupeKey, ev.time);
+    this.events.push({
+      time: ev.time,
+      type: ev.type,
+      label: ev.label,
+      category: ev.category || 'clash',
+      intensity: ev.intensity,
+      primaryBallId: ev.primaryBallId ?? 0,
+      secondaryBallId: ev.secondaryBallId ?? -1,
+      s: ev.s ?? 0,
+      worldPos: ev.worldPos ? ev.worldPos.clone() : new THREE.Vector3(),
+      subType: ev.subType || '',
+    });
+  }
+
+  compileDirectorSheet(totalDuration, balls) {
+    const dur = Math.max(totalDuration, this.totalDuration, 1.0);
+    this.totalDuration = dur;
+
+    // 1. Pick top non-overlapping highlight peaks from captured physics events
+    const ranked = [...this.events].sort((a, b) => b.intensity - a.intensity);
+    const chosen = [];
+    for (const ev of ranked) {
+      if (chosen.some((c) => Math.abs(c.time - ev.time) < 2.25)) continue;
+      chosen.push(ev);
+      if (chosen.length >= 18) break;
+    }
+    chosen.sort((a, b) => a.time - b.time);
+    this.highlights = chosen;
+
+    // 2. Build seamless gapless director shot timeline covering [0, dur]
+    const rawCuts = [];
+    const angleForEvent = (ev, prevAngle) => {
+      let pool = ['apex_chase', 'impact_close', 'side_drone', 'helicopter_orbit'];
+      if (ev.type === 'pack_clash') {
+        pool = ['impact_close', 'reverse_pack', 'helicopter_orbit', 'side_drone'];
+      } else if (ev.type === 'hurdle_hit') {
+        pool = ['hurdle_hero', 'impact_close', 'apex_chase', 'side_drone'];
+      } else if (ev.type === 'big_air') {
+        pool = ['jump_profile', 'impact_close', 'side_drone'];
+      } else if (ev.type === 'lead_change') {
+        pool = ['bumper_duel', 'side_drone', 'reverse_pack', 'apex_chase'];
+      } else if (ev.type === 'booster') {
+        pool = ['bumper_duel', 'apex_chase', 'jump_profile'];
+      } else if (ev.type === 'wall_slam') {
+        pool = ['impact_close', 'hurdle_hero', 'side_drone'];
+      } else if (ev.type === 'finish') {
+        pool = ['finish_hero'];
+      }
+      const filtered = pool.filter((a) => a !== prevAngle);
+      return filtered[0] || pool[0];
+    };
+
+    const shotTitleMap = {
+      launch_sweep: 'Grid Launch Sweep',
+      impact_close: 'Trackside Impact',
+      hurdle_hero: 'Obstacle Close-Up',
+      jump_profile: 'Aerial Flight Pan',
+      bumper_duel: 'Bumper Duel',
+      reverse_pack: 'Reverse Pack Cam',
+      helicopter_orbit: 'Helicopter Sweeper',
+      side_drone: 'Tracking Side Drone',
+      apex_chase: 'Dynamic Action Chase',
+      finish_hero: 'Finish Gantry Hero',
+    };
+
+    // Always start with dramatic opening launch
+    let cursor = 0;
+    let prevAngle = 'launch_sweep';
+    const openingEnd = Math.min(dur, chosen.length > 0 ? Math.min(2.6, Math.max(1.5, chosen[0].time - 0.85)) : Math.min(3.2, dur));
+    if (openingEnd > 0.3) {
+      rawCuts.push({
+        startTime: 0,
+        endTime: openingEnd,
+        angleType: 'launch_sweep',
+        shotLabel: shotTitleMap.launch_sweep,
+        momentLabel: 'Gate Drop & Pack Launch',
+        category: 'start',
+        primaryBallId: 0,
+        secondaryBallId: -1,
+        focusPos: null,
+        s: 0,
+        intensity: 0.6,
+        slowMoStart: -1,
+        slowMoEnd: -1,
       });
-      this._dummy.scale.set(0, 0, 0);
-      this._dummy.updateMatrix();
-      this.mesh.setMatrixAt(i, this._dummy.matrix);
-      this.mesh.setColorAt(i, this._color.setHex(0xf59e0b));
+      cursor = openingEnd;
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
-    scene.add(this.mesh);
-  }
 
-  emitBurst(origin, count, colorHex, speed = 7, life = 0.55, gravity = 14, baseScale = 1) {
-    this._color.set(colorHex);
-    for (let i = 0; i < count; i++) {
-      const p = this.particles[this.cursor];
-      this.cursor = (this.cursor + 1) % this.maxCount;
-      p.active = true;
-      p.pos.copy(origin);
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.random() * Math.PI * 0.65;
-      const mag = speed * (0.45 + Math.random() * 0.75);
-      p.vel.set(
-        Math.sin(phi) * Math.cos(theta) * mag,
-        Math.cos(phi) * mag * 0.85 + 1.5,
-        Math.sin(phi) * Math.sin(theta) * mag
-      );
-      p.rot.set(Math.random() * 6, Math.random() * 6, Math.random() * 6);
-      p.rotSpeed.set(
-        (Math.random() - 0.5) * 14,
-        (Math.random() - 0.5) * 14,
-        (Math.random() - 0.5) * 14
-      );
-      p.life = life * (0.7 + Math.random() * 0.5);
-      p.maxLife = p.life;
-      p.baseScale = baseScale * (0.7 + Math.random() * 0.6);
-      p.gravity = gravity;
-      this.mesh.setColorAt(this.cursor === 0 ? this.maxCount - 1 : this.cursor - 1, this._color);
-    }
-    if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
-  }
+    const fillerAngles = ['apex_chase', 'side_drone', 'helicopter_orbit', 'reverse_pack', 'bumper_duel'];
+    let fillerIdx = 0;
 
-  update(dt) {
-    let anyUpdated = false;
-    for (let i = 0; i < this.maxCount; i++) {
-      const p = this.particles[i];
-      if (!p.active) continue;
-      anyUpdated = true;
-      p.life -= dt;
-      if (p.life <= 0) {
-        p.active = false;
-        this._dummy.scale.set(0, 0, 0);
-        this._dummy.updateMatrix();
-        this.mesh.setMatrixAt(i, this._dummy.matrix);
+    for (const ev of chosen) {
+      const preLead = ev.type === 'finish' ? 1.4 : 0.95;
+      const postHold = ev.type === 'finish' ? 2.4 : 1.75;
+      let segStart = Math.max(cursor, ev.time - preLead);
+      const segEnd = Math.min(dur, Math.max(segStart + 1.85, ev.time + postHold));
+
+      // Fill gap before highlight with dynamic kinetic coverage
+      while (segStart - cursor > 2.2) {
+        const chunkEnd = Math.min(segStart, cursor + 3.2);
+        const fAngle = fillerAngles.find((_, idx) => fillerAngles[(fillerIdx + idx) % fillerAngles.length] !== prevAngle)
+          || fillerAngles[fillerIdx % fillerAngles.length];
+        fillerIdx++;
+        const leaderId = this.findLeaderAtTime(cursor + (chunkEnd - cursor) * 0.5);
+        rawCuts.push({
+          startTime: cursor,
+          endTime: chunkEnd,
+          angleType: fAngle,
+          shotLabel: shotTitleMap[fAngle] || 'Action Chase',
+          momentLabel: 'High-Speed Pursuit',
+          category: 'race',
+          primaryBallId: leaderId,
+          secondaryBallId: -1,
+          focusPos: null,
+          s: 0,
+          intensity: 0.45,
+          slowMoStart: -1,
+          slowMoEnd: -1,
+        });
+        prevAngle = fAngle;
+        cursor = chunkEnd;
+      }
+
+      // Snap start backward cleanly if gap was tiny (<2.2s)
+      segStart = cursor;
+      if (segEnd - segStart < 0.7 && rawCuts.length > 0) {
         continue;
       }
 
-      p.vel.y -= p.gravity * dt;
-      p.pos.addScaledVector(p.vel, dt);
-      p.rot.x += p.rotSpeed.x * dt;
-      p.rot.y += p.rotSpeed.y * dt;
-      p.rot.z += p.rotSpeed.z * dt;
+      const angle = angleForEvent(ev, prevAngle);
+      prevAngle = angle;
+      const slowMoEligible = ev.intensity >= 0.92 || ev.type === 'finish' || ev.type === 'lead_change';
+      rawCuts.push({
+        startTime: segStart,
+        endTime: segEnd,
+        angleType: angle,
+        shotLabel: shotTitleMap[angle] || 'Highlight Cam',
+        momentLabel: ev.label,
+        category: ev.category,
+        primaryBallId: ev.primaryBallId,
+        secondaryBallId: ev.secondaryBallId,
+        focusPos: ev.worldPos ? ev.worldPos.clone() : null,
+        s: ev.s,
+        intensity: ev.intensity,
+        slowMoStart: slowMoEligible ? Math.max(segStart, ev.time - 0.34) : -1,
+        slowMoEnd: slowMoEligible ? Math.min(segEnd, ev.time + 0.55) : -1,
+      });
+      cursor = segEnd;
+    }
 
-      const s = p.baseScale * (p.life / p.maxLife);
-      this._dummy.position.copy(p.pos);
-      this._dummy.rotation.copy(p.rot);
-      this._dummy.scale.set(s, s, s);
-      this._dummy.updateMatrix();
-      this.mesh.setMatrixAt(i, this._dummy.matrix);
+    // Ensure finish & remaining tail are covered
+    while (dur - cursor > 0.15) {
+      const chunkEnd = Math.min(dur, cursor + 3.4);
+      const isNearEnd = dur - cursor < 3.6;
+      const fAngle = isNearEnd && prevAngle !== 'finish_hero'
+        ? 'finish_hero'
+        : fillerAngles.find((_, idx) => fillerAngles[(fillerIdx + idx) % fillerAngles.length] !== prevAngle) || 'apex_chase';
+      fillerIdx++;
+      const leaderId = this.findLeaderAtTime(cursor + (chunkEnd - cursor) * 0.5);
+      rawCuts.push({
+        startTime: cursor,
+        endTime: chunkEnd,
+        angleType: fAngle,
+        shotLabel: shotTitleMap[fAngle] || 'Finish Sweep',
+        momentLabel: isNearEnd ? 'Checkered Flag Run' : 'Pack Battle',
+        category: isNearEnd ? 'finish' : 'race',
+        primaryBallId: leaderId,
+        secondaryBallId: -1,
+        focusPos: null,
+        s: 0,
+        intensity: isNearEnd ? 0.95 : 0.45,
+        slowMoStart: isNearEnd ? Math.max(cursor, dur - 1.1) : -1,
+        slowMoEnd: isNearEnd ? dur : -1,
+      });
+      prevAngle = fAngle;
+      cursor = chunkEnd;
     }
-    if (anyUpdated) {
-      this.mesh.instanceMatrix.needsUpdate = true;
+
+    // Fallback if empty
+    if (rawCuts.length === 0) {
+      rawCuts.push({
+        startTime: 0,
+        endTime: dur,
+        angleType: 'apex_chase',
+        shotLabel: shotTitleMap.apex_chase,
+        momentLabel: 'Full Race Replay',
+        category: 'race',
+        primaryBallId: balls?.[0]?.id ?? 0,
+        secondaryBallId: -1,
+        focusPos: null,
+        s: 0,
+        intensity: 0.5,
+        slowMoStart: -1,
+        slowMoEnd: -1,
+      });
     }
+
+    this.shots = rawCuts;
+    this.activeShotIdx = -1;
   }
 
-  clear() {
-    for (let i = 0; i < this.maxCount; i++) {
-      this.particles[i].active = false;
-      this._dummy.scale.set(0, 0, 0);
-      this._dummy.updateMatrix();
-      this.mesh.setMatrixAt(i, this._dummy.matrix);
+  findLeaderAtTime(time) {
+    if (this.frames.length === 0) return 0;
+    const f = this.frames[this.findFrameIndex(time)];
+    for (let i = 0; i < f.ballRanks.length; i++) {
+      if (f.ballRanks[i] === 1) return i;
     }
-    this.mesh.instanceMatrix.needsUpdate = true;
+    return 0;
+  }
+
+  findFrameIndex(time) {
+    const frames = this.frames;
+    let lo = 0;
+    let hi = frames.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (frames[mid].t <= time) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  getShotIndexAt(time) {
+    for (let i = 0; i < this.shots.length; i++) {
+      if (time >= this.shots[i].startTime && time <= this.shots[i].endTime) {
+        return i;
+      }
+    }
+    return Math.max(0, this.shots.length - 1);
   }
 }
 
 // ============================================================================
-// Single-Draw-Call Additive Motion Trail Ribbons (Zero-GC Ring Buffer)
+// Zero-GC Subtle Slipstream Wake Ribbons (Normal Blending)
 // ============================================================================
 class BallTrailRenderer {
-  constructor(scene, maxBalls = 50, pointsPerBall = 14) {
+  constructor(scene, maxBalls = 50, pointsPerBall = 10) {
     this.maxBalls = maxBalls;
     this.pointsPerBall = pointsPerBall;
     const quadsPerBall = pointsPerBall - 1;
@@ -926,8 +1388,8 @@ class BallTrailRenderer {
     const mat = new THREE.MeshBasicMaterial({
       vertexColors: true,
       transparent: true,
-      opacity: 0.72,
-      blending: THREE.AdditiveBlending,
+      opacity: 0.16,
+      blending: THREE.NormalBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -936,14 +1398,18 @@ class BallTrailRenderer {
     this.mesh.frustumCulled = false;
     scene.add(this.mesh);
 
-    this.histories = Array.from({ length: maxBalls }, () => []);
+    this.pool = Array.from({ length: maxBalls }, () =>
+      Array.from({ length: pointsPerBall }, () => new THREE.Vector3())
+    );
+    this.counts = new Uint8Array(maxBalls);
     this._color = new THREE.Color();
+    this._tintTarget = new THREE.Color(0xdcd6c8);
     this._side = new THREE.Vector3();
     this._dir = new THREE.Vector3();
   }
 
   reset() {
-    for (const h of this.histories) h.length = 0;
+    this.counts.fill(0);
     this.positions.fill(0);
     this.colors.fill(0);
     this.geo.attributes.position.needsUpdate = true;
@@ -953,30 +1419,45 @@ class BallTrailRenderer {
   update(balls, cameraPos) {
     let vIdx = 0;
     const P = this.pointsPerBall;
+    const quads = P - 1;
 
     for (let b = 0; b < this.maxBalls; b++) {
       const ball = balls[b];
-      const hist = this.histories[b];
-      if (!ball || ball.currentSpeed < 4.5) {
-        if (hist.length > 0 && ball && ball.currentSpeed < 2.2) {
-          hist.shift();
-        } else if (!ball) {
-          hist.length = 0;
-        }
-      }
+      const buf = this.pool[b];
+      let nPts = this.counts[b];
 
-      if (ball && ball.currentSpeed >= 4.5) {
-        const last = hist[hist.length - 1];
-        if (!last || last.distanceToSquared(ball.worldPos) > 0.08) {
-          hist.push(ball.worldPos.clone());
-          if (hist.length > P) hist.shift();
+      if (!ball) {
+        nPts = 0;
+        this.counts[b] = 0;
+      } else if (ball.currentSpeed >= 5.0) {
+        if (nPts === 0) {
+          buf[0].copy(ball.worldPos);
+          nPts = 1;
         } else {
-          last.copy(ball.worldPos);
+          const last = buf[nPts - 1];
+          if (last.distanceToSquared(ball.worldPos) > 0.1) {
+            if (nPts < P) {
+              buf[nPts].copy(ball.worldPos);
+              nPts++;
+            } else {
+              for (let k = 0; k < P - 1; k++) {
+                buf[k].copy(buf[k + 1]);
+              }
+              buf[P - 1].copy(ball.worldPos);
+            }
+          } else {
+            last.copy(ball.worldPos);
+          }
         }
+        this.counts[b] = nPts;
+      } else if (nPts > 0 && ball.currentSpeed < 2.5) {
+        for (let k = 0; k < nPts - 1; k++) {
+          buf[k].copy(buf[k + 1]);
+        }
+        nPts--;
+        this.counts[b] = nPts;
       }
 
-      const quads = P - 1;
-      const nPts = hist.length;
       if (!ball || nPts < 2) {
         for (let q = 0; q < quads * 6; q++) {
           const base = vIdx * 3;
@@ -991,9 +1472,9 @@ class BallTrailRenderer {
         continue;
       }
 
-      this._color.set(ball.color);
-      const speedFade = Math.min(1, Math.max(0, (ball.currentSpeed - 4.5) / 14));
-      const baseHalfW = BALL_RADIUS * (0.28 + speedFade * 0.24);
+      this._color.set(ball.color).lerp(this._tintTarget, 0.78);
+      const speedFade = Math.min(1, Math.max(0, (ball.currentSpeed - 6.0) / 14));
+      const baseHalfW = BALL_RADIUS * (0.22 + speedFade * 0.2);
 
       for (let q = 0; q < quads; q++) {
         if (q >= nPts - 1) {
@@ -1010,8 +1491,8 @@ class BallTrailRenderer {
           continue;
         }
 
-        const p0 = hist[q];
-        const p1 = hist[q + 1];
+        const p0 = buf[q];
+        const p1 = buf[q + 1];
         const t0 = q / (nPts - 1);
         const t1 = (q + 1) / (nPts - 1);
         const w0 = baseHalfW * t0;
@@ -1023,14 +1504,14 @@ class BallTrailRenderer {
         if (this._side.lengthSq() < 1e-6) this._side.set(1, 0, 0);
         this._side.normalize();
 
-        const b0 = t0 * t0 * speedFade * 0.72;
-        const b1 = t1 * t1 * speedFade * 0.72;
-        const r0 = this._color.r * b0;
-        const g0 = this._color.g * b0;
-        const bl0 = this._color.b * b0;
-        const r1 = this._color.r * b1;
-        const g1 = this._color.g * b1;
-        const bl1 = this._color.b * b1;
+        const b0 = t0 * t0 * speedFade;
+        const b1 = t1 * t1 * speedFade;
+        const r0 = this._color.r * (0.65 + 0.35 * b0);
+        const g0 = this._color.g * (0.65 + 0.35 * b0);
+        const bl0 = this._color.b * (0.65 + 0.35 * b0);
+        const r1 = this._color.r * (0.65 + 0.35 * b1);
+        const g1 = this._color.g * (0.65 + 0.35 * b1);
+        const bl1 = this._color.b * (0.65 + 0.35 * b1);
 
         const ax = p0.x - this._side.x * w0;
         const ay = p0.y - this._side.y * w0;
@@ -1072,96 +1553,6 @@ class BallTrailRenderer {
 }
 
 // ============================================================================
-// Ambient Map-Themed Atmospheric Drift (Mist / Snow / Embers / Neon Motes)
-// ============================================================================
-class AmbientAtmosphere {
-  constructor(scene, spriteTex, count = 220) {
-    this.count = count;
-    this.positions = new Float32Array(count * 3);
-    this.velocities = [];
-    for (let i = 0; i < count; i++) {
-      this.positions[i * 3] = (Math.random() - 0.5) * 90;
-      this.positions[i * 3 + 1] = (Math.random() - 0.5) * 38;
-      this.positions[i * 3 + 2] = (Math.random() - 0.5) * 90;
-      this.velocities.push({
-        x: (Math.random() - 0.5) * 1.1,
-        y: (Math.random() - 0.5) * 0.8,
-        z: (Math.random() - 0.5) * 1.1,
-      });
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    this.mat = new THREE.PointsMaterial({
-      size: 0.48,
-      map: spriteTex,
-      transparent: true,
-      opacity: 0.52,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      color: 0xcbd5e1,
-    });
-    this.points = new THREE.Points(geo, this.mat);
-    this.points.frustumCulled = false;
-    scene.add(this.points);
-    this.verticalBias = -0.3;
-  }
-
-  setTheme(mapKey) {
-    if (mapKey === 'caldera') {
-      this.mat.color.setHex(0xf97316);
-      this.mat.size = 0.52;
-      this.mat.opacity = 0.65;
-      this.verticalBias = 1.4; // rising volcanic embers
-    } else if (mapKey === 'arctic') {
-      this.mat.color.setHex(0xe0f2fe);
-      this.mat.size = 0.5;
-      this.mat.opacity = 0.62;
-      this.verticalBias = -1.6; // falling snow crystals
-    } else if (mapKey === 'cyber') {
-      this.mat.color.setHex(0x38bdf8);
-      this.mat.size = 0.42;
-      this.mat.opacity = 0.55;
-      this.verticalBias = -0.4;
-    } else if (mapKey === 'sunset') {
-      this.mat.color.setHex(0xfdba74);
-      this.mat.size = 0.46;
-      this.mat.opacity = 0.48;
-      this.verticalBias = 0.15;
-    } else {
-      this.mat.color.setHex(0x94a3b8);
-      this.mat.size = 0.44;
-      this.mat.opacity = 0.4;
-      this.verticalBias = -0.25;
-    }
-  }
-
-  update(dt, focusPos) {
-    const halfX = 45;
-    const halfY = 19;
-    const halfZ = 45;
-    for (let i = 0; i < this.count; i++) {
-      const idx = i * 3;
-      const v = this.velocities[i];
-      let x = this.positions[idx] + v.x * dt;
-      let y = this.positions[idx + 1] + (v.y + this.verticalBias) * dt;
-      let z = this.positions[idx + 2] + v.z * dt;
-
-      if (x < focusPos.x - halfX) x += halfX * 2;
-      else if (x > focusPos.x + halfX) x -= halfX * 2;
-      if (y < focusPos.y - halfY) y += halfY * 2;
-      else if (y > focusPos.y + halfY) y -= halfY * 2;
-      if (z < focusPos.z - halfZ) z += halfZ * 2;
-      else if (z > focusPos.z + halfZ) z -= halfZ * 2;
-
-      this.positions[idx] = x;
-      this.positions[idx + 1] = y;
-      this.positions[idx + 2] = z;
-    }
-    this.points.geometry.attributes.position.needsUpdate = true;
-  }
-}
-
-// ============================================================================
 // Colour Utilities
 // ============================================================================
 function hslToHex(h, s, l) {
@@ -1174,17 +1565,41 @@ function hslToHex(h, s, l) {
   return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
 }
 
-function generateDistinctColor(index, existingSet) {
+const _depthColor = new THREE.Color();
+const _depthHsl = { h: 0, s: 0, l: 0 };
+
+function scaleHexColorInt(hexInt, lightMul = 1.0, satBoost = 1.0) {
+  if (lightMul >= 0.999 && satBoost <= 1.001) return hexInt;
+  _depthColor.setHex(hexInt);
+  _depthColor.getHSL(_depthHsl);
+  const nextS = Math.min(1, _depthHsl.s * satBoost);
+  const nextL = Math.max(0.03, Math.min(0.95, _depthHsl.l * lightMul));
+  _depthColor.setHSL(_depthHsl.h, nextS, nextL);
+  return _depthColor.getHex();
+}
+
+function scaleCssColor(cssHex, lightMul = 1.0, satBoost = 1.0) {
+  if ((lightMul >= 0.999 && satBoost <= 1.001) || !cssHex || cssHex[0] !== '#') return cssHex;
+  const hexInt = parseInt(cssHex.slice(1), 16);
+  if (Number.isNaN(hexInt)) return cssHex;
+  const scaled = scaleHexColorInt(hexInt, lightMul, satBoost);
+  return `#${scaled.toString(16).padStart(6, '0')}`;
+}
+
+function generateDistinctColor(index, existingSet, paletteKey = 'grandprix') {
+  const isDark = paletteKey === 'ultradark';
   let step = index;
   for (let attempt = 0; attempt < 200; attempt++) {
     const hue = (step * 137.508 + attempt * 23) % 360;
-    const sat = 68 + ((step + attempt) % 3) * 10;
-    const light = 48 + ((step + attempt) % 4) * 7;
+    const sat = isDark ? 92 + ((step + attempt) % 2) * 8 : 68 + ((step + attempt) % 3) * 10;
+    const light = isDark ? 30 + ((step + attempt) % 4) * 4 : 48 + ((step + attempt) % 4) * 7;
     const hex = hslToHex(hue, sat, light).toLowerCase();
     if (!existingSet.has(hex)) return hex;
     step++;
   }
-  return `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
+  return isDark
+    ? hslToHex(Math.random() * 360, 96, 34).toLowerCase()
+    : `#${Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, '0')}`;
 }
 
 function buildBallColorsForPalette(paletteKey, count, allowDuplicates) {
@@ -1194,7 +1609,7 @@ function buildBallColorsForPalette(paletteKey, count, allowDuplicates) {
   for (let i = 0; i < count; i++) {
     let candidate = base[i % base.length].toLowerCase();
     if (!allowDuplicates && used.has(candidate)) {
-      candidate = generateDistinctColor(i, used);
+      candidate = generateDistinctColor(i, used, paletteKey);
     }
     used.add(candidate);
     result.push(candidate);
@@ -1203,66 +1618,52 @@ function buildBallColorsForPalette(paletteKey, count, allowDuplicates) {
 }
 
 // ============================================================================
-// High-Res 4K-Grade Procedural PBR Textures (Zero External Assets)
+// High-Res Procedural PBR Textures (Zero External Assets, Realistic Surfaces)
 // ============================================================================
-function createTrackSurfaceTexture(maxAnisotropy, mapCfg) {
+function createTrackSurfaceTexture(maxAnisotropy, mapCfg, trackMul = 1.0) {
   const S = 1024;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = mapCfg?.trackBase || '#1b2029';
+  ctx.fillStyle = scaleCssColor(mapCfg?.trackBase || '#2d2f33', trackMul);
   ctx.fillRect(0, 0, S, S);
 
-  // Subtle racing groove shading down track center
+  // Subtle racing groove wear down track center
   const groove = ctx.createLinearGradient(0, 0, S, 0);
-  groove.addColorStop(0.0, 'rgba(0,0,0,0.22)');
-  groove.addColorStop(0.18, 'rgba(255,255,255,0.03)');
-  groove.addColorStop(0.5, 'rgba(255,255,255,0.05)');
-  groove.addColorStop(0.82, 'rgba(255,255,255,0.03)');
-  groove.addColorStop(1.0, 'rgba(0,0,0,0.22)');
+  groove.addColorStop(0.0, 'rgba(0,0,0,0.18)');
+  groove.addColorStop(0.22, 'rgba(255,255,255,0.03)');
+  groove.addColorStop(0.5, 'rgba(255,255,255,0.045)');
+  groove.addColorStop(0.78, 'rgba(255,255,255,0.03)');
+  groove.addColorStop(1.0, 'rgba(0,0,0,0.18)');
   ctx.fillStyle = groove;
   ctx.fillRect(0, 0, S, S);
 
-  // Fine asphalt & carbon micro-grain
-  for (let i = 0; i < 14000; i++) {
+  // Smooth aggregate asphalt & stone micro-grain (noise-free in motion)
+  for (let i = 0; i < 4200; i++) {
     const x = Math.random() * S;
     const y = Math.random() * S;
-    const alpha = 0.025 + Math.random() * 0.055;
-    ctx.fillStyle = Math.random() > 0.48 ? `rgba(255,255,255,${alpha})` : `rgba(0,0,0,${alpha * 1.4})`;
-    ctx.fillRect(x, y, 2, 2);
+    const alpha = 0.015 + Math.random() * 0.025;
+    ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${alpha})` : `rgba(0,0,0,${alpha * 1.2})`;
+    ctx.fillRect(x, y, 3, 3);
   }
 
-  // Subtle transverse precision expansion seams
+  // Subtle concrete/asphalt expansion seams
   ctx.fillStyle = 'rgba(0, 0, 0, 0.24)';
   for (let y = 0; y < S; y += 256) {
     ctx.fillRect(0, y, S, 3);
   }
 
-  // Crisp twin racing shoulder stripes
-  ctx.fillStyle = mapCfg?.trackLine || 'rgba(245, 158, 11, 0.72)';
-  ctx.fillRect(26, 0, 14, S);
-  ctx.fillRect(S - 40, 0, 14, S);
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.28)';
-  ctx.fillRect(48, 0, 4, S);
-  ctx.fillRect(S - 52, 0, 4, S);
+  // Crisp painted motorsport white shoulder lines
+  ctx.fillStyle = mapCfg?.trackLine || 'rgba(238, 235, 228, 0.78)';
+  ctx.fillRect(26, 0, 12, S);
+  ctx.fillRect(S - 38, 0, 12, S);
 
-  // Center lane guide dashes
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+  // Subtle center lane guide dashes
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
   for (let y = 32; y < S; y += 128) {
-    ctx.fillRect(S * 0.5 - 5, y, 10, 62);
-  }
-
-  // Subtle directional racing chevrons
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.09)';
-  ctx.lineWidth = 6;
-  for (let y = 128; y < S; y += 256) {
-    ctx.beginPath();
-    ctx.moveTo(S * 0.38, y + 48);
-    ctx.lineTo(S * 0.5, y);
-    ctx.lineTo(S * 0.62, y + 48);
-    ctx.stroke();
+    ctx.fillRect(S * 0.5 - 4, y, 8, 56);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -1277,16 +1678,16 @@ function createTrackNormalTexture(maxAnisotropy) {
   const S = 512;
   const h = new Float32Array(S * S);
   for (let y = 0; y < S; y++) {
-    const seam = y % 128 < 2 ? -0.38 : 0;
+    const seam = y % 128 < 2 ? -0.32 : 0;
     for (let x = 0; x < S; x++) {
       const weave =
-        Math.sin(x * 0.45) * Math.cos(y * 0.45) * 0.08 + (Math.random() - 0.5) * 0.22;
+        Math.sin(x * 0.28) * Math.cos(y * 0.28) * 0.05 + (Math.random() - 0.5) * 0.035;
       h[y * S + x] = seam + weave;
     }
   }
 
   const data = new Uint8Array(S * S * 4);
-  const strength = 2.6;
+  const strength = 1.15;
   for (let y = 0; y < S; y++) {
     const ym = (y - 1 + S) % S;
     const yp = (y + 1) % S;
@@ -1338,10 +1739,10 @@ function createTrackRoughnessTexture(maxAnisotropy) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, S, S);
 
-  for (let i = 0; i < 6500; i++) {
-    const v = 80 + Math.floor(Math.random() * 90);
-    ctx.fillStyle = `rgba(${v},${v},${v},0.16)`;
-    ctx.fillRect(Math.random() * S, Math.random() * S, 2, 2);
+  for (let i = 0; i < 2200; i++) {
+    const v = 100 + Math.floor(Math.random() * 55);
+    ctx.fillStyle = `rgba(${v},${v},${v},0.06)`;
+    ctx.fillRect(Math.random() * S, Math.random() * S, 3, 3);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -1351,20 +1752,49 @@ function createTrackRoughnessTexture(maxAnisotropy) {
   return tex;
 }
 
-function createSkyDomeTexture(skyStops = ['#050a14', '#0f1b2e', '#233b59', '#0c111a']) {
+function createSkyDomeTexture(skyStops = ['#2864a8', '#5b93cd', '#a8cce6', '#dde8ee'], skyMul = 1.0) {
+  const W = 1024;
+  const H = 512;
   const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 1024;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 0, 1024);
-  grad.addColorStop(0.0, skyStops[0]);
-  grad.addColorStop(0.42, skyStops[1]);
-  grad.addColorStop(0.68, skyStops[2]);
-  grad.addColorStop(1.0, skyStops[3]);
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0.0, scaleCssColor(skyStops[0], skyMul));
+  grad.addColorStop(0.28, scaleCssColor(skyStops[1], skyMul));
+  grad.addColorStop(0.49, scaleCssColor(skyStops[2], skyMul));
+  grad.addColorStop(0.56, scaleCssColor(skyStops[3], skyMul));
+  grad.addColorStop(1.0, scaleCssColor(skyStops[3], skyMul));
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 1024);
+  ctx.fillRect(0, 0, W, H);
+
+  // Soft natural cirrus & cumulus cloud wisps above the horizon
+  const cloudRng = mulberry32(4219);
+  const cloudBright = skyMul < 0.45 ? 0.35 : skyMul < 0.8 ? 0.65 : 1.0;
+  for (let i = 0; i < 65; i++) {
+    const cx = cloudRng() * W;
+    const cy = H * (0.18 + cloudRng() * 0.25);
+    const rx = 38 + cloudRng() * 110;
+    const ry = 8 + cloudRng() * 20;
+    const alpha = (0.05 + cloudRng() * 0.11) * cloudBright;
+    const cg = ctx.createRadialGradient(cx, cy, rx * 0.1, cx, cy, rx);
+    cg.addColorStop(0.0, `rgba(255, 253, 248, ${alpha})`);
+    cg.addColorStop(0.6, `rgba(255, 253, 248, ${alpha * 0.35})`);
+    cg.addColorStop(1.0, 'rgba(255, 253, 248, 0.0)');
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, ry / rx);
+    ctx.translate(-cx, -cy);
+    ctx.fillStyle = cg;
+    ctx.beginPath();
+    ctx.arc(cx, cy, rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
   return tex;
 }
 
@@ -1376,49 +1806,33 @@ function createBallMarbleTexture(maxAnisotropy) {
   canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  // Rich marbled ceramic + metallic micro-flake base multiplied by ball color
-  ctx.fillStyle = '#f8fafc';
+  // Pure clean high-chroma base so every selected marble colour shines at full depth
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
 
-  // Subtle tonal depth gradient across hemispheres
-  const depthGrad = ctx.createLinearGradient(0, 0, 0, H);
-  depthGrad.addColorStop(0.0, 'rgba(255,255,255,0.22)');
-  depthGrad.addColorStop(0.5, 'rgba(226,232,240,0.0)');
-  depthGrad.addColorStop(1.0, 'rgba(15,23,42,0.18)');
-  ctx.fillStyle = depthGrad;
-  ctx.fillRect(0, 0, W, H);
-
-  // Flowing glass marble swirl ribbons
-  for (let i = 0; i < 9; i++) {
-    ctx.strokeStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.65)' : 'rgba(15, 23, 42, 0.12)';
-    ctx.lineWidth = 8 + (i % 3) * 4;
+  // Delicate translucent glass swirl ribbons (keeps pigment pure)
+  for (let i = 0; i < 8; i++) {
+    ctx.strokeStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.24)' : 'rgba(0, 0, 0, 0.16)';
+    ctx.lineWidth = 6 + (i % 3) * 3;
     ctx.beginPath();
-    const y0 = 32 + i * 52;
+    const y0 = 36 + i * 54;
     ctx.moveTo(0, y0);
-    ctx.bezierCurveTo(W * 0.33, y0 + 48, W * 0.66, y0 - 48, W, y0);
+    ctx.bezierCurveTo(W * 0.33, y0 + 44, W * 0.66, y0 - 44, W, y0);
     ctx.stroke();
   }
 
-  // Subtle metallic micro-speckle
-  for (let i = 0; i < 2400; i++) {
-    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.28)' : 'rgba(15,23,42,0.08)';
-    ctx.fillRect(Math.random() * W, Math.random() * H, 2, 2);
-  }
+  // Crisp subtle equator spin band + fine pin-stripes for reading rotation without muting hue
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+  ctx.fillRect(0, H * 0.47, W, H * 0.06);
 
-  // Precision equator racing band + twin crisp pin-stripes
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.42)';
-  ctx.fillRect(0, H * 0.45, W, H * 0.1);
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+  ctx.fillRect(0, H * 0.494, W, 5);
 
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
-  ctx.fillRect(0, H * 0.49, W, 8);
-  ctx.fillRect(0, H * 0.46, W, 3);
-  ctx.fillRect(0, H * 0.535, W, 3);
-
-  // Opposite pole markers for unmistakable rotational spin reading
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.34)';
+  // Opposite pole markers for rotational spin reading
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.26)';
   ctx.beginPath();
-  ctx.arc(W * 0.25, H * 0.21, 36, 0, Math.PI * 2);
-  ctx.arc(W * 0.75, H * 0.79, 36, 0, Math.PI * 2);
+  ctx.arc(W * 0.25, H * 0.21, 28, 0, Math.PI * 2);
+  ctx.arc(W * 0.75, H * 0.79, 28, 0, Math.PI * 2);
   ctx.fill();
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -1433,16 +1847,15 @@ function createBoosterTexture(maxAnisotropy) {
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
 
-  ctx.fillStyle = '#06202a';
+  // Industrial dark brushed steel plate with painted ochre/amber launch chevrons
+  ctx.fillStyle = '#2d3136';
   ctx.fillRect(0, 0, 256, 512);
 
-  // Bright cyan side rails
-  ctx.fillStyle = '#22d3ee';
+  ctx.fillStyle = '#d9821e';
   ctx.fillRect(6, 0, 14, 512);
   ctx.fillRect(236, 0, 14, 512);
 
-  // Repeating luminous directional chevrons
-  ctx.strokeStyle = '#67e8f9';
+  ctx.strokeStyle = '#e8a23a';
   ctx.lineWidth = 18;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -1463,6 +1876,28 @@ function createBoosterTexture(maxAnisotropy) {
   return tex;
 }
 
+function createRumbleCurbTexture(maxAnisotropy, primary = '#c63d2d', secondary = '#eae5dc') {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  const segH = 64;
+  for (let y = 0; y < 512; y += segH) {
+    ctx.fillStyle = (y / segH) % 2 === 0 ? primary : secondary;
+    ctx.fillRect(0, y, 128, segH);
+  }
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.14)';
+  for (let i = 0; i < 500; i++) {
+    ctx.fillRect(Math.random() * 128, Math.random() * 512, 2, 2);
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
 function createSoftRadialTexture() {
   const canvas = document.createElement('canvas');
   canvas.width = 128;
@@ -1478,21 +1913,6 @@ function createSoftRadialTexture() {
   return tex;
 }
 
-function createSpotBeamTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  const grad = ctx.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.42)');
-  grad.addColorStop(0.55, 'rgba(255, 255, 255, 0.14)');
-  grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 64, 256);
-  const tex = new THREE.CanvasTexture(canvas);
-  return tex;
-}
-
 function createCheckeredTexture(maxAnisotropy, cols = 12, rows = 4) {
   const canvas = document.createElement('canvas');
   canvas.width = 1024;
@@ -1502,7 +1922,7 @@ function createCheckeredTexture(maxAnisotropy, cols = 12, rows = 4) {
   const ch = canvas.height / rows;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      ctx.fillStyle = (r + c) % 2 === 0 ? '#f8fafc' : '#0f172a';
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#f4f2ec' : '#1b1d20';
       ctx.fillRect(c * cw, r * ch, cw + 0.5, ch + 0.5);
     }
   }
@@ -1517,9 +1937,9 @@ function createHazardStripeTexture(maxAnisotropy) {
   canvas.width = 512;
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#f59e0b';
+  ctx.fillStyle = '#d9821e';
   ctx.fillRect(0, 0, 512, 512);
-  ctx.fillStyle = '#141923';
+  ctx.fillStyle = '#1f2226';
   for (let i = -512; i < 1024; i += 96) {
     ctx.beginPath();
     ctx.moveTo(i, 0);
@@ -1537,46 +1957,33 @@ function createHazardStripeTexture(maxAnisotropy) {
   return tex;
 }
 
-function createArenaFloorTexture(maxAnisotropy, mapCfg) {
-  const S = 1024;
+function createArenaFloorTexture(maxAnisotropy) {
+  // Neutral natural mineral/soil micro-detail texture multiplied cleanly by vertex colors
+  const S = 512;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
   const ctx = canvas.getContext('2d');
-  ctx.fillStyle = mapCfg?.groundBase || '#0c0f15';
+  ctx.fillStyle = '#e5e3dc';
   ctx.fillRect(0, 0, S, S);
 
-  for (let i = 0; i < 6000; i++) {
-    const a = 0.015 + Math.random() * 0.03;
-    ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
-    ctx.fillRect(Math.random() * S, Math.random() * S, 3, 3);
-  }
-
-  ctx.strokeStyle = mapCfg?.groundGrid || 'rgba(148, 163, 184, 0.09)';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(0, 0, S, S);
-
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.035)';
-  ctx.lineWidth = 1.5;
-  for (let i = 256; i < S; i += 256) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(i, S);
-    ctx.moveTo(0, i);
-    ctx.lineTo(S, i);
-    ctx.stroke();
+  for (let i = 0; i < 14000; i++) {
+    const a = 0.03 + Math.random() * 0.07;
+    ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(25,22,18,${a})`;
+    const sz = 1 + Math.floor(Math.random() * 3);
+    ctx.fillRect(Math.random() * S, Math.random() * S, sz, sz);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(110, 110);
+  tex.repeat.set(95, 95);
   tex.anisotropy = maxAnisotropy;
   return tex;
 }
 
-function createSignCanvasTexture(text, bgColor = '#141923', fgColor = '#f59e0b') {
+function createSignCanvasTexture(text, bgColor = '#1e201d', fgColor = '#d97724') {
   const canvas = document.createElement('canvas');
   canvas.width = 256;
   canvas.height = 128;
@@ -1586,8 +1993,8 @@ function createSignCanvasTexture(text, bgColor = '#141923', fgColor = '#f59e0b')
   ctx.strokeStyle = fgColor;
   ctx.lineWidth = 6;
   ctx.strokeRect(6, 6, 244, 116);
-  ctx.fillStyle = '#f8fafc';
-  ctx.font = 'bold 54px Oxanium, sans-serif';
+  ctx.fillStyle = '#f3f2ee';
+  ctx.font = 'bold 52px "Plus Jakarta Sans", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, 128, 66);
@@ -1621,7 +2028,7 @@ function buildTrackStations(config, trackSeed = 0) {
 
   // Seeded track parameters so Generate New Track truly reshapes every run
   const dirSign = rng() > 0.5 ? 1 : -1;
-  const basePitch = 0.265 + rng() * 0.055; // 15° - 18.3°
+  const basePitch = 0.295 + rng() * 0.055; // 16.9° - 20.1° energetic downhill
   const curveAmp = 0.55 + rng() * 0.48;
   const curveCycles = Math.max(1.25, L / (34 + rng() * 20));
   const secondaryAmp = (rng() - 0.5) * 0.35;
@@ -1641,9 +2048,9 @@ function buildTrackStations(config, trackSeed = 0) {
     // Downhill pitch profile
     let pitch = basePitch;
     if (s < 0) {
-      pitch = 0.085;
-    } else if (s < 4.5) {
-      pitch = THREE.MathUtils.lerp(0.085, basePitch, smoothstep(0, 4.5, s));
+      pitch = 0.15;
+    } else if (s < 2.2) {
+      pitch = THREE.MathUtils.lerp(0.15, basePitch, smoothstep(0, 2.2, s));
     } else if (s > L) {
       pitch = THREE.MathUtils.lerp(basePitch, 0.0, smoothstep(L, L + 10, s));
     } else if (config.trackType === 'straight') {
@@ -1652,9 +2059,17 @@ function buildTrackStations(config, trackSeed = 0) {
     } else if (config.trackType === 'mixed') {
       const env = smoothstep(4, 12, s) * (1 - smoothstep(L - 10, L, s));
       pitch = basePitch + 0.095 * Math.sin(s * mixedWaveFreq + trackSeed * 0.7) * env;
-    } else if (config.trackType === 'curved') {
+    } else if (config.trackType === 'curved' || config.trackType === 'zigzag' || config.trackType === 'chicane') {
       const env = smoothstep(6, 14, s) * (1 - smoothstep(L - 12, L, s));
       pitch = basePitch + 0.045 * Math.sin(s * 0.14 + trackSeed) * env;
+    } else if (config.trackType === 'rollercoaster') {
+      const env = smoothstep(3, 10, s) * (1 - smoothstep(L - 10, L, s));
+      const waveCycles = Math.max(2.0, L / 28);
+      const pArg = ((s - 2) / Math.max(18, L - 8)) * Math.PI * 2 * waveCycles;
+      pitch = THREE.MathUtils.clamp(basePitch + 0.165 * Math.sin(pArg + trackSeed * 0.6) * env, 0.065, 0.5);
+    } else if (config.trackType === 'split') {
+      const env = smoothstep(5, 12, s) * (1 - smoothstep(L - 12, L, s));
+      pitch = basePitch + 0.055 * Math.sin(s * 0.11 + trackSeed) * env;
     }
 
     // Yaw & banking profile
@@ -1683,6 +2098,42 @@ function buildTrackStations(config, trackSeed = 0) {
       yaw = multilaneSweep * Math.sin(arg) * env;
       const dYaw = multilaneSweep * ((Math.PI * 2.0) / span) * Math.cos(arg) * env;
       bank = THREE.MathUtils.clamp(-dYaw * 3.5, -0.16, 0.16);
+    } else if (config.trackType === 'zigzag') {
+      const span = Math.max(20, L - 10);
+      const env = smoothstep(2, 9, s) * (1 - smoothstep(L - 9, L, s));
+      const zigCount = Math.max(3.0, Math.round(L / 26));
+      const dArg = (Math.PI * zigCount) / span;
+      const arg = ((s - 2) / span) * Math.PI * zigCount;
+      const sA = Math.sin(arg);
+      const zigWave = (2 / Math.PI) * Math.asin(sA * 0.92);
+      yaw = 0.9 * dirSign * zigWave * env;
+      const dZig = (2 / Math.PI) * ((0.92 * Math.cos(arg)) / Math.sqrt(Math.max(0.08, 1 - 0.8464 * sA * sA)));
+      const dYaw = 0.9 * dirSign * dZig * dArg * env;
+      bank = THREE.MathUtils.clamp(-dYaw * 3.8, -0.26, 0.26);
+    } else if (config.trackType === 'rollercoaster') {
+      const span = Math.max(20, L - 10);
+      const env = smoothstep(4, 12, s) * (1 - smoothstep(L - 12, L, s));
+      const arg = ((s - 4) / span) * Math.PI * 2.0;
+      yaw = (0.28 + (trackSeed % 2) * 0.12) * dirSign * Math.sin(arg) * env;
+      const dYaw = (0.28 + (trackSeed % 2) * 0.12) * dirSign * ((Math.PI * 2.0) / span) * Math.cos(arg) * env;
+      bank = THREE.MathUtils.clamp(-dYaw * 3.6, -0.18, 0.18);
+    } else if (config.trackType === 'chicane') {
+      const span = Math.max(20, L - 10);
+      const env = smoothstep(3, 10, s) * (1 - smoothstep(L - 10, L, s));
+      const chicanePairs = Math.max(2, Math.round(L / 34));
+      const dArg = (Math.PI * 2 * chicanePairs) / span;
+      const arg = ((s - 3) / span) * Math.PI * 2 * chicanePairs;
+      const sVal = Math.sin(arg);
+      yaw = 0.78 * dirSign * sVal * sVal * sVal * env;
+      const dYaw = 0.78 * dirSign * 3 * sVal * sVal * Math.cos(arg) * dArg * env;
+      bank = THREE.MathUtils.clamp(-dYaw * 3.8, -0.24, 0.24);
+    } else if (config.trackType === 'split') {
+      const span = Math.max(20, L - 10);
+      const env = smoothstep(4, 12, s) * (1 - smoothstep(L - 12, L, s));
+      const arg = ((s - 4) / span) * Math.PI * 2.0;
+      yaw = 0.36 * dirSign * Math.sin(arg) * env;
+      const dYaw = 0.36 * dirSign * ((Math.PI * 2.0) / span) * Math.cos(arg) * env;
+      bank = THREE.MathUtils.clamp(-dYaw * 3.2, -0.15, 0.15);
     } else if (config.trackType === 'mixed') {
       const span = Math.max(20, L - 10);
       const env = smoothstep(4, 12, s) * (1 - smoothstep(L - 10, L, s));
@@ -1819,7 +2270,6 @@ class MarbleRushApp {
     this.canvas = document.getElementById('race-canvas');
     this.sound = new SoundEngine();
     this.recorder = new GameplayRecorder(this.canvas, this.sound);
-    this.particles = null;
 
     // State
     this.config = {
@@ -1832,18 +2282,22 @@ class MarbleRushApp {
       this.config.allowDuplicateColors
     );
 
-    this.raceState = 'READY'; // READY | COUNTDOWN | RACING | PAUSED | FINISHED
+    this.raceState = 'READY'; // READY | COUNTDOWN | RACING | PAUSED | FINISHED | REPLAY
     this.cameraMode = 'overview';
+    this.preReplayCameraMode = 'overview';
     this.followShotAngle = 0;
     this.directorState = {
-      shotName: 'Hero Dolly',
+      shotName: 'Wide Dolly',
       cutAt: 0,
       cycleIdx: 0,
       fixedPos: new THREE.Vector3(),
       hasFixedPos: false,
       justCut: false,
+      liveEventType: null,
+      liveBallId: 0,
     };
-    this.selectedBallIndex = 0;
+    this.replay = new ReplaySystem();
+    this.lastLeaderId = 0;
     this.raceElapsedTime = 0;
     this.countdownRemaining = 0;
     this.lastCountdownDigit = null;
@@ -1855,15 +2309,10 @@ class MarbleRushApp {
     this.trackSeed = 0;
     this.recordedVideoInfo = null;
     this.ultraQuality = !isSoftwareGl;
-    this.composerFailed = false;
-    this.composerVerified = false;
     this._activeEnvMapKey = null;
 
     // Three.js & Rapier objects
     this.renderer = null;
-    this.composer = null;
-    this.bloomPass = null;
-    this.lensPass = null;
     this.scene = null;
     this.camera = null;
     this.controls = null;
@@ -1876,17 +2325,15 @@ class MarbleRushApp {
     this.trackGroup = null;
     this.hurdleGroup = null;
     this.ballGroup = null;
-    this.selectionHalo = null;
     this.contactShadowMesh = null;
     this.trails = null;
-    this.atmosphere = null;
+    this.waterMesh = null;
 
     this.trackData = null;
     this.balls = [];
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
     this.checkpointVisuals = [];
-    this.finishLaserBar = null;
     this.startGate = null;
     this.startLightPods = [];
     this.podiumSlots = [];
@@ -1914,11 +2361,9 @@ class MarbleRushApp {
     this._v3 = new THREE.Vector3();
     this._v4 = new THREE.Vector3();
     this._q1 = new THREE.Quaternion();
+    this._q2 = new THREE.Quaternion();
     this._dummy = new THREE.Object3D();
     this._upVec = new THREE.Vector3(0, 1, 0);
-    this._raycaster = new THREE.Raycaster();
-    this._pointer = new THREE.Vector2();
-    this._pointerDownPos = { x: 0, y: 0 };
 
     this.cacheDom();
     this.bindUiEvents();
@@ -1947,11 +2392,14 @@ class MarbleRushApp {
       hudProgressPct: document.getElementById('hud-progress-pct'),
       hudSpeed: document.getElementById('hud-speed'),
       hudRecBadge: document.getElementById('hud-rec-badge'),
+      hudReplayBadge: document.getElementById('hud-replay-badge'),
+      hudReplayMomentText: document.getElementById('hud-replay-moment-text'),
 
       btnStart: document.getElementById('btn-start-race'),
       btnPause: document.getElementById('btn-pause-race'),
       btnResume: document.getElementById('btn-resume-race'),
       btnRestart: document.getElementById('btn-restart-race'),
+      btnCinematicReplay: document.getElementById('btn-cinematic-replay'),
       btnViewResults: document.getElementById('btn-view-results'),
       btnToggleQuality: document.getElementById('btn-toggle-quality'),
       btnToggleSound: document.getElementById('btn-toggle-sound'),
@@ -1967,6 +2415,7 @@ class MarbleRushApp {
       distancePresets: document.getElementById('distance-presets'),
       customDistanceWrap: document.getElementById('custom-distance-wrap'),
       inputCustomDistance: document.getElementById('input-custom-distance'),
+      darknessPresets: document.getElementById('darkness-presets'),
       mapPresetGroup: document.getElementById('map-preset-group'),
       inputCycleMap: document.getElementById('input-cycle-map'),
       trackTypeGroup: document.getElementById('track-type-group'),
@@ -1994,16 +2443,30 @@ class MarbleRushApp {
       btnGenerateTrack: document.getElementById('btn-generate-track'),
       btnResetSettings: document.getElementById('btn-reset-settings'),
 
+      cameraDock: document.getElementById('camera-dock'),
       cameraModeButtons: document.getElementById('camera-mode-buttons'),
       btnCycleShot: document.getElementById('btn-cycle-shot'),
       cameraShotLabel: document.getElementById('camera-shot-label'),
-      cinemaBars: document.getElementById('cinema-bars'),
-      selectFollowBall: document.getElementById('select-follow-ball'),
       btnHideHud: document.getElementById('btn-hide-hud'),
       btnShowHud: document.getElementById('btn-show-hud'),
       freeCamBar: document.getElementById('free-cam-bar'),
       btnFreeFocusLeader: document.getElementById('btn-free-focus-leader'),
       btnFreeCenterTrack: document.getElementById('btn-free-center-track'),
+
+      replayDock: document.getElementById('replay-dock'),
+      replayShotBadge: document.getElementById('replay-shot-badge'),
+      replayScrubberWrap: document.getElementById('replay-scrubber-wrap'),
+      replayProgressFill: document.getElementById('replay-progress-fill'),
+      replayMarkers: document.getElementById('replay-markers'),
+      replayScrubberThumb: document.getElementById('replay-scrubber-thumb'),
+      replayTimeReadout: document.getElementById('replay-time-readout'),
+      btnReplayPlay: document.getElementById('btn-replay-play'),
+      btnReplayPrevHl: document.getElementById('btn-replay-prev-hl'),
+      btnReplayNextHl: document.getElementById('btn-replay-next-hl'),
+      replaySpeedGroup: document.getElementById('replay-speed-group'),
+      btnReplaySlowmo: document.getElementById('btn-replay-slowmo'),
+      btnReplayAutocam: document.getElementById('btn-replay-autocam'),
+      btnReplayExit: document.getElementById('btn-replay-exit'),
 
       countdownOverlay: document.getElementById('countdown-overlay'),
       countdownText: document.getElementById('countdown-text'),
@@ -2024,6 +2487,7 @@ class MarbleRushApp {
       videoPreviewWrap: document.getElementById('video-preview-wrap'),
       replayVideoPlayer: document.getElementById('replay-video-player'),
       resultsTableBody: document.getElementById('results-table-body'),
+      btnResultsCinematicReplay: document.getElementById('btn-results-cinematic-replay'),
       btnResultsRaceAgain: document.getElementById('btn-results-race-again'),
       btnResultsNewTrack: document.getElementById('btn-results-new-track'),
       btnResultsSettings: document.getElementById('btn-results-settings'),
@@ -2072,15 +2536,15 @@ class MarbleRushApp {
 
   getTargetPixelRatio() {
     if (isSoftwareGl) return 1;
-    const baseCap = this.ultraQuality ? 2.0 : 1.0;
+    const w = Math.max(1, window.innerWidth || 1280);
+    const h = Math.max(1, window.innerHeight || 720);
+    const baseCap = this.ultraQuality ? 1.5 : 1.0;
     let pr = Math.min(window.devicePixelRatio || 1, baseCap);
     if (this.renderer) {
       const caps = this.renderer.capabilities;
       const gl = this.renderer.getContext();
       const maxRb = gl ? gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 4096 : 4096;
-      const maxDim = Math.min(caps.maxTextureSize || 4096, maxRb, 4096);
-      const w = Math.max(1, window.innerWidth || 1280);
-      const h = Math.max(1, window.innerHeight || 720);
+      const maxDim = Math.min(caps.maxTextureSize || 4096, maxRb, 2560);
       const maxSafePr = Math.min(maxDim / w, maxDim / h);
       pr = Math.max(0.5, Math.min(pr, maxSafePr));
     }
@@ -2099,15 +2563,15 @@ class MarbleRushApp {
     this.renderer.setPixelRatio(this.getTargetPixelRatio());
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.0;
     this.renderer.shadowMap.enabled = !isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0d1522);
-    this.scene.fog = new THREE.FogExp2(0x0d1522, 0.0034);
+    this.scene.background = new THREE.Color(0xc2d5e0);
+    this.scene.fog = new THREE.FogExp2(0xc2d5e0, 0.00118);
 
-    // Initial Studio IBL Reflections (updated per active map theme)
+    // Outdoor Daylight IBL Reflections (updated per active territory)
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.shared.envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environment = this.shared.envMap;
@@ -2133,27 +2597,27 @@ class MarbleRushApp {
     this.controls.minDistance = 2.5;
     this.controls.enabled = false;
 
-    // 3-Point Warm/Cool Lighting Rig
-    this.hemiLight = new THREE.HemisphereLight(0x9ec5ff, 0x182230, 1.0);
+    // Natural Sun + Sky Hemisphere Lighting Rig
+    this.hemiLight = new THREE.HemisphereLight(0xd4e8ff, 0x3b352c, 0.94);
     this.scene.add(this.hemiLight);
 
-    this.keyLight = new THREE.DirectionalLight(0xfff2dc, 2.35);
-    this.keyLight.position.set(35, 65, 28);
+    this.keyLight = new THREE.DirectionalLight(0xfff1d6, 2.85);
+    this.keyLight.position.set(42, 72, 34);
     this.keyLight.castShadow = !isSoftwareGl;
-    this.keyLight.shadow.mapSize.set(2048, 2048);
-    const d = 54;
+    this.keyLight.shadow.mapSize.set(1024, 1024);
+    const d = 58;
     this.keyLight.shadow.camera.left = -d;
     this.keyLight.shadow.camera.right = d;
     this.keyLight.shadow.camera.top = d;
     this.keyLight.shadow.camera.bottom = -d;
     this.keyLight.shadow.camera.near = 4;
-    this.keyLight.shadow.camera.far = 220;
+    this.keyLight.shadow.camera.far = 230;
     this.keyLight.shadow.bias = -0.0004;
     this.keyLight.shadow.normalBias = 0.03;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
 
-    this.rimLight = new THREE.DirectionalLight(0x38bdf8, 0.85);
+    this.rimLight = new THREE.DirectionalLight(0x9ec6eb, 0.45);
     this.rimLight.position.set(-40, 30, -50);
     this.scene.add(this.rimLight);
 
@@ -2163,10 +2627,10 @@ class MarbleRushApp {
     this.ballGroup = new THREE.Group();
     this.scene.add(this.trackGroup, this.hurdleGroup, this.ballGroup);
 
-    // Atmospheric gradient sky dome
+    // Daylight sky dome
     const skyGeo = new THREE.SphereGeometry(920, 36, 24);
     const skyMat = new THREE.MeshBasicMaterial({
-      map: createSkyDomeTexture(ENVIRONMENT_MAPS.alpine.skyStops),
+      map: createSkyDomeTexture(TERRITORIES.expedition.skyStops),
       side: THREE.BackSide,
       fog: false,
       depthWrite: false,
@@ -2174,13 +2638,8 @@ class MarbleRushApp {
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.scene.add(this.skyDome);
 
-    // Pooled spark & confetti particle system + single-draw-call motion trail ribbons
-    this.particles = new ParticlePool(this.scene, 320);
-    this.trails = new BallTrailRenderer(this.scene, 50, 14);
-
-    if (!isSoftwareGl) {
-      this.initPostProcessing();
-    }
+    // Subtle slipstream wake ribbons
+    this.trails = new BallTrailRenderer(this.scene, 50, 10);
 
     // Canvas WebGL context safety
     this.canvas.addEventListener('webglcontextlost', (e) => {
@@ -2197,89 +2656,25 @@ class MarbleRushApp {
     window.addEventListener('resize', () => this.onResize());
   }
 
-  initPostProcessing() {
-    try {
-      const w = Math.max(1, window.innerWidth || 1280);
-      const h = Math.max(1, window.innerHeight || 720);
-      const pr = this.getTargetPixelRatio();
-      const gl = this.renderer.getContext();
-      const isWebGL2 = Boolean(this.renderer.capabilities.isWebGL2);
-      const hasFloatColor =
-        isWebGL2 &&
-        Boolean(
-          gl.getExtension('EXT_color_buffer_half_float') ||
-            gl.getExtension('EXT_color_buffer_float')
-        );
-
-      // Unscaled CSS dimensions + samples: 0 avoids double-DPR FBO overflow and MSAA HalfFloat driver black-screens
-      const rt = new THREE.WebGLRenderTarget(w, h, {
-        type: hasFloatColor ? THREE.HalfFloatType : THREE.UnsignedByteType,
-        samples: 0,
-      });
-
-      this.composer = new EffectComposer(this.renderer, rt);
-      this.composer.setPixelRatio(pr);
-      this.composer.setSize(w, h);
-
-      this.composer.addPass(new RenderPass(this.scene, this.camera));
-
-      this.bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), 0.26, 0.52, 0.94);
-      this.composer.addPass(this.bloomPass);
-
-      this.lensPass = new ShaderPass(CinematicLensShader);
-      this.lensPass.uniforms.uTexelSize.value.set(
-        1 / Math.max(1, w * pr),
-        1 / Math.max(1, h * pr)
-      );
-      this.composer.addPass(this.lensPass);
-
-      // OutputPass must be last so ACESFilmicToneMapping + SRGBColorSpace run cleanly to screen
-      this.composer.addPass(new OutputPass());
-      this.composerFailed = false;
-      this.composerVerified = false;
-    } catch (err) {
-      console.warn('Post-processing disabled, falling back to direct renderer:', err);
-      this.disablePostProcessing();
-    }
-  }
-
-  disablePostProcessing() {
-    if (this.composer) {
-      try {
-        this.composer.dispose();
-      } catch {
-        // Ignore cleanup errors
-      }
-      this.composer = null;
-    }
-    this.bloomPass = null;
-    this.lensPass = null;
-    this.composerFailed = true;
-    this.ultraQuality = false;
-  }
-
   initSharedAssets() {
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
-    const mapCfg = ENVIRONMENT_MAPS[this.config.mapPreset] || ENVIRONMENT_MAPS.alpine;
+    const mapCfg = TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition;
     this.shared.trackTex = createTrackSurfaceTexture(maxAniso, mapCfg);
     this.shared.trackNormalTex = createTrackNormalTexture(maxAniso);
     this.shared.trackRoughnessTex = createTrackRoughnessTexture(maxAniso);
+    this.shared.rumbleTex = createRumbleCurbTexture(
+      maxAniso,
+      mapCfg.curbPrimary,
+      mapCfg.curbSecondary
+    );
     this.shared.marbleTex = createBallMarbleTexture(maxAniso);
     this.shared.checkerTex = createCheckeredTexture(maxAniso);
     this.shared.hazardTex = createHazardStripeTexture(maxAniso);
-    this.shared.floorTex = createArenaFloorTexture(maxAniso, mapCfg);
+    this.shared.floorTex = createArenaFloorTexture(maxAniso);
     this.shared.boosterTex = createBoosterTexture(maxAniso);
     this.shared.softRadialTex = createSoftRadialTexture();
-    this.shared.spotBeamTex = createSpotBeamTexture();
 
-    this.shared.ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 40, 28);
-
-    // Map-themed ambient drift motes / snow / embers
-    this.atmosphere = new AmbientAtmosphere(
-      this.scene,
-      this.shared.softRadialTex,
-      isSoftwareGl ? 90 : 240
-    );
+    this.shared.ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 32, 22);
 
     // Instanced soft contact shadows directly beneath every marble
     const shadowGeo = new THREE.PlaneGeometry(BALL_RADIUS * 2.4, BALL_RADIUS * 2.4);
@@ -2304,53 +2699,44 @@ class MarbleRushApp {
     }
     this.contactShadowMesh.instanceMatrix.needsUpdate = true;
     this.scene.add(this.contactShadowMesh);
-
-    // Selection halo ring around followed ball
-    const haloGeo = new THREE.RingGeometry(BALL_RADIUS * 1.35, BALL_RADIUS * 1.65, 32);
-    haloGeo.rotateX(-Math.PI / 2);
-    const haloMat = new THREE.MeshBasicMaterial({
-      color: 0xf59e0b,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.92,
-      depthWrite: false,
-    });
-    this.selectionHalo = new THREE.Mesh(haloGeo, haloMat);
-    this.selectionHalo.visible = false;
-    this.scene.add(this.selectionHalo);
   }
 
-  updateEnvironmentReflection(mapCfg) {
+  updateEnvironmentReflection(mapCfg, darkCfg) {
     if (!this.renderer || isSoftwareGl) return;
+    const skyMul = darkCfg?.skyMul ?? 1.0;
+    const terrainMul = darkCfg?.terrainMul ?? 1.0;
     const iblScene = new THREE.Scene();
     const skySphere = new THREE.Mesh(
       new THREE.SphereGeometry(20, 24, 16),
       new THREE.MeshBasicMaterial({
-        map: createSkyDomeTexture(mapCfg.skyStops),
+        map: createSkyDomeTexture(mapCfg.skyStops, skyMul),
         side: THREE.BackSide,
       })
     );
     iblScene.add(skySphere);
 
-    // Crisp studio reflection softboxes tinted to match active map
-    const keyStrip = new THREE.Mesh(
-      new THREE.PlaneGeometry(14, 4),
+    // Natural outdoor sun disc + subtle terrain ground bounce for glass/ceramic reflections
+    const sunDisc = new THREE.Mesh(
+      new THREE.CircleGeometry(3.5, 24),
       new THREE.MeshBasicMaterial({ color: mapCfg.keyColor, side: THREE.DoubleSide })
     );
-    keyStrip.position.set(8, 12, 8);
-    keyStrip.lookAt(0, 0, 0);
-    iblScene.add(keyStrip);
+    sunDisc.position.set(10, 14, 8);
+    sunDisc.lookAt(0, 0, 0);
+    iblScene.add(sunDisc);
 
-    const rimStrip = new THREE.Mesh(
-      new THREE.PlaneGeometry(12, 3),
-      new THREE.MeshBasicMaterial({ color: mapCfg.rimColor, side: THREE.DoubleSide })
+    const groundBounce = new THREE.Mesh(
+      new THREE.CircleGeometry(18, 24),
+      new THREE.MeshBasicMaterial({
+        color: scaleHexColorInt(mapCfg.hemiGround, terrainMul),
+        side: THREE.DoubleSide,
+      })
     );
-    rimStrip.position.set(-10, 7, -10);
-    rimStrip.lookAt(0, 0, 0);
-    iblScene.add(rimStrip);
+    groundBounce.rotation.x = -Math.PI / 2;
+    groundBounce.position.set(0, -10, 0);
+    iblScene.add(groundBounce);
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const nextEnv = pmrem.fromScene(iblScene, 0.035).texture;
+    const nextEnv = pmrem.fromScene(iblScene, 0.04).texture;
     if (this.shared.envMap) this.shared.envMap.dispose();
     this.shared.envMap = nextEnv;
     this.scene.environment = nextEnv;
@@ -2358,53 +2744,60 @@ class MarbleRushApp {
     skySphere.material.map.dispose();
     skySphere.geometry.dispose();
     skySphere.material.dispose();
-    keyStrip.geometry.dispose();
-    keyStrip.material.dispose();
-    rimStrip.geometry.dispose();
-    rimStrip.material.dispose();
+    sunDisc.geometry.dispose();
+    sunDisc.material.dispose();
+    groundBounce.geometry.dispose();
+    groundBounce.material.dispose();
     pmrem.dispose();
   }
 
   applyMapEnvironment() {
-    const mapKey = this.config.mapPreset || 'alpine';
-    const mapCfg = ENVIRONMENT_MAPS[mapKey] || ENVIRONMENT_MAPS.alpine;
+    const mapKey = this.config.mapPreset || 'expedition';
+    const mapCfg = TERRITORIES[mapKey] || TERRITORIES.expedition;
+    const darkKey = this.config.colorDarkness || 'standard';
+    const darkCfg = COLOR_DARKNESS_PRESETS[darkKey] || COLOR_DARKNESS_PRESETS.standard;
+    const satBoost = darkCfg.satBoost ?? 1.0;
+    const envCacheKey = `${mapKey}:${darkKey}`;
     const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
 
-    if (this._activeEnvMapKey !== mapKey) {
-      this._activeEnvMapKey = mapKey;
+    if (this._activeEnvMapKey !== envCacheKey) {
+      this._activeEnvMapKey = envCacheKey;
 
-      // Update sky dome texture & map-matched IBL reflections only when map theme actually changes
+      const richSkyStops = mapCfg.skyStops.map((s) => scaleCssColor(s, 1.0, satBoost));
       if (this.skyDome && this.skyDome.material) {
         if (this.skyDome.material.map) this.skyDome.material.map.dispose();
-        this.skyDome.material.map = createSkyDomeTexture(mapCfg.skyStops);
+        this.skyDome.material.map = createSkyDomeTexture(richSkyStops, darkCfg.skyMul);
         this.skyDome.material.needsUpdate = true;
       }
-      this.updateEnvironmentReflection(mapCfg);
-      this.atmosphere?.setTheme(mapKey);
+      this.updateEnvironmentReflection({ ...mapCfg, skyStops: richSkyStops }, darkCfg);
 
       if (this.shared.trackTex) this.shared.trackTex.dispose();
-      if (this.shared.floorTex) this.shared.floorTex.dispose();
-      this.shared.trackTex = createTrackSurfaceTexture(maxAniso, mapCfg);
-      this.shared.floorTex = createArenaFloorTexture(maxAniso, mapCfg);
+      if (this.shared.rumbleTex) this.shared.rumbleTex.dispose();
+      this.shared.trackTex = createTrackSurfaceTexture(maxAniso, mapCfg, darkCfg.trackMul);
+      this.shared.rumbleTex = createRumbleCurbTexture(
+        maxAniso,
+        scaleCssColor(mapCfg.curbPrimary, darkCfg.trackMul, satBoost),
+        scaleCssColor(mapCfg.curbSecondary, Math.max(0.7, darkCfg.trackMul), 1.0)
+      );
     }
 
-    // Lighting & atmosphere
-    this.scene.background.setHex(mapCfg.fogColor);
-    this.scene.fog.color.setHex(mapCfg.fogColor);
+    const fogHex = scaleHexColorInt(mapCfg.fogColor, darkCfg.fogMul, satBoost);
+    this.scene.background.setHex(fogHex);
+    this.scene.fog.color.setHex(fogHex);
     this.scene.fog.density = mapCfg.fogDensity;
 
-    this.hemiLight.color.setHex(mapCfg.hemiSky);
-    this.hemiLight.groundColor.setHex(mapCfg.hemiGround);
-    this.hemiLight.intensity = mapCfg.hemiIntensity;
+    this.hemiLight.color.setHex(scaleHexColorInt(mapCfg.hemiSky, darkCfg.skyMul, satBoost));
+    this.hemiLight.groundColor.setHex(scaleHexColorInt(mapCfg.hemiGround, darkCfg.terrainMul, satBoost));
+    this.hemiLight.intensity = mapCfg.hemiIntensity * darkCfg.hemiMul;
 
     this.keyLight.color.setHex(mapCfg.keyColor);
-    this.keyLight.intensity = mapCfg.keyIntensity;
+    this.keyLight.intensity = mapCfg.keyIntensity * darkCfg.keyMul;
 
     this.rimLight.color.setHex(mapCfg.rimColor);
-    this.rimLight.intensity = mapCfg.rimIntensity;
+    this.rimLight.intensity = mapCfg.rimIntensity * darkCfg.rimMul;
 
-    this.renderer.toneMappingExposure = mapCfg.exposure;
-    return mapCfg;
+    this.renderer.toneMappingExposure = mapCfg.exposure * darkCfg.exposureMul;
+    return { ...mapCfg, _darkCfg: darkCfg };
   }
 
   onResize() {
@@ -2415,24 +2808,6 @@ class MarbleRushApp {
     this.camera.updateProjectionMatrix();
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
-    if (this.composer && !this.composerFailed) {
-      try {
-        this.composer.setPixelRatio(pr);
-        this.composer.setSize(w, h);
-        if (this.bloomPass) {
-          this.bloomPass.setSize(w, h);
-        }
-        if (this.lensPass) {
-          this.lensPass.uniforms.uTexelSize.value.set(
-            1 / Math.max(1, w * pr),
-            1 / Math.max(1, h * pr)
-          );
-        }
-      } catch (err) {
-        console.warn('Composer resize fallback:', err);
-        this.disablePostProcessing();
-      }
-    }
   }
 
   // ==========================================================================
@@ -2452,13 +2827,13 @@ class MarbleRushApp {
             this.shared.trackTex,
             this.shared.trackNormalTex,
             this.shared.trackRoughnessTex,
+            this.shared.rumbleTex,
             this.shared.marbleTex,
             this.shared.checkerTex,
             this.shared.hazardTex,
             this.shared.floorTex,
             this.shared.boosterTex,
             this.shared.softRadialTex,
-            this.shared.spotBeamTex,
           ];
           for (const m of mats) {
             if (m.map && !sharedMaps.includes(m.map)) m.map.dispose();
@@ -2474,14 +2849,15 @@ class MarbleRushApp {
   }
 
   rebuildTrackAndRace({ preserveCamera = false } = {}) {
+    const wasRecording = this.recorder.isRecording;
     this.recorder.discard();
+    if (wasRecording) this.onResize();
     this.recordedVideoInfo = null;
     this.dom.hudRecBadge.classList.add('hidden');
     this.dom.videoPreviewWrap.classList.add('hidden');
     this.dom.replayVideoPlayer.removeAttribute('src');
     this.dom.videoExportPanel.classList.add('hidden');
 
-    if (this.particles) this.particles.clear();
     if (this.trails) this.trails.reset();
     if (this.contactShadowMesh) {
       this._dummy.scale.set(0, 0, 0);
@@ -2493,6 +2869,8 @@ class MarbleRushApp {
     }
 
     this.raceState = 'READY';
+    this.replay.reset();
+    this.lastLeaderId = 0;
     this.raceElapsedTime = 0;
     this.physicsAccumulator = 0;
     this.finishedCount = 0;
@@ -2502,11 +2880,13 @@ class MarbleRushApp {
     this.camBankRoll = 0;
     this.directorState.cutAt = 0;
     this.directorState.hasFixedPos = false;
-    this.directorState.shotName = 'Hero Dolly';
+    this.directorState.shotName = 'Wide Dolly';
+    this.directorState.liveEventType = null;
+    this.directorState.liveBallId = 0;
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
     this.checkpointVisuals = [];
-    this.finishLaserBar = null;
+    this.waterMesh = null;
     this.podiumSlots = [];
     this.startLightPods = [];
     this.balls = [];
@@ -2518,6 +2898,10 @@ class MarbleRushApp {
     this.dom.winnerToast.classList.add('hidden');
     this.dom.resultsModal.classList.add('hidden');
     this.dom.btnViewResults.classList.add('hidden');
+    if (this.dom.btnCinematicReplay) this.dom.btnCinematicReplay.classList.add('hidden');
+    if (this.dom.replayDock) this.dom.replayDock.classList.add('hidden');
+    if (this.dom.hudReplayBadge) this.dom.hudReplayBadge.classList.add('hidden');
+    if (this.dom.cameraDock) this.dom.cameraDock.classList.remove('hidden');
 
     // Dispose old Three.js objects & Rapier world
     this.disposeGroup(this.trackGroup);
@@ -2556,7 +2940,6 @@ class MarbleRushApp {
       this.snapOverviewCamera();
     }
 
-    this.updateFollowBallSelect();
     this.updateLeaderboard(true);
     this.syncUiState();
   }
@@ -2569,8 +2952,11 @@ class MarbleRushApp {
     const halfW = this.config.trackWidth / 2;
     const curbW = 0.36;
     const curbH = 0.16;
-    const wallH = 1.82;
-    const wallT = 0.45;
+    const wallH = 2.15;
+    const wallT = 0.56;
+    const shieldTopY = 3.22;
+    const physShieldMidY = 4.4;
+    const physShieldTopY = 6.2;
     const deckBottom = -0.68;
 
     const profile = [
@@ -2596,6 +2982,29 @@ class MarbleRushApp {
     const railUvs = [];
     const railIndices = [];
 
+    const glassPositions = [];
+    const glassUvs = [];
+    const glassIndices = [];
+
+    const rightShieldProfile = [
+      [halfW, wallH - 0.15],
+      [halfW, physShieldMidY],
+      [halfW - 0.48, physShieldTopY],
+      [halfW + wallT + 0.14, physShieldTopY],
+      [halfW + wallT + 0.14, wallH - 0.15],
+    ];
+    const leftShieldProfile = [
+      [-halfW - wallT - 0.14, wallH - 0.15],
+      [-halfW - wallT - 0.14, physShieldTopY],
+      [-halfW + 0.48, physShieldTopY],
+      [-halfW, physShieldMidY],
+      [-halfW, wallH - 0.15],
+    ];
+    const shieldVertsR = [];
+    const shieldIndicesR = [];
+    const shieldVertsL = [];
+    const shieldIndicesL = [];
+
     for (let i = 0; i < numStations; i++) {
       const st = stations[i];
       const vCoord = st.s * 0.25;
@@ -2613,11 +3022,45 @@ class MarbleRushApp {
         uvs.push(uCoord, vCoord);
       }
 
+      // Physics containment upper shields (solid watertight walls up to 6.2m with inward catch lip)
+      for (let k = 0; k < 5; k++) {
+        const [rx, ry] = rightShieldProfile[k];
+        shieldVertsR.push(
+          st.pos.x + st.R.x * rx + st.U.x * ry,
+          st.pos.y + st.R.y * rx + st.U.y * ry,
+          st.pos.z + st.R.z * rx + st.U.z * ry
+        );
+        const [lx, ly] = leftShieldProfile[k];
+        shieldVertsL.push(
+          st.pos.x + st.R.x * lx + st.U.x * ly,
+          st.pos.y + st.R.y * lx + st.U.y * ly,
+          st.pos.z + st.R.z * lx + st.U.z * ly
+        );
+      }
+
+      // Sleek visual clear safety glass extension between wallH and shieldTopY
+      const glassPts = [
+        [-halfW - 0.06, wallH],
+        [-halfW - 0.06, shieldTopY],
+        [halfW + 0.06, wallH],
+        [halfW + 0.06, shieldTopY],
+      ];
+      for (let g = 0; g < 4; g++) {
+        const [gx, gy] = glassPts[g];
+        glassPositions.push(
+          st.pos.x + st.R.x * gx + st.U.x * gy,
+          st.pos.y + st.R.y * gx + st.U.y * gy,
+          st.pos.z + st.R.z * gx + st.U.z * gy
+        );
+        glassUvs.push(g % 2, vCoord);
+      }
+
+      // Top metallic guardrail cap above the tempered safety shield
       const railPts = [
-        [-halfW - wallT - 0.02, wallH + 0.06],
-        [-halfW + 0.02, wallH + 0.06],
-        [halfW - 0.02, wallH + 0.06],
-        [halfW + wallT + 0.02, wallH + 0.06],
+        [-halfW - 0.16, shieldTopY + 0.04],
+        [-halfW + 0.04, shieldTopY + 0.04],
+        [halfW - 0.04, shieldTopY + 0.04],
+        [halfW + 0.16, shieldTopY + 0.04],
       ];
       for (let r = 0; r < 4; r++) {
         const [rx, ry] = railPts[r];
@@ -2642,20 +3085,31 @@ class MarbleRushApp {
         indices.push(a, b, c, a, c, d);
       }
 
+      const sA = i * 5;
+      const sB = (i + 1) * 5;
+      for (let k = 0; k < 5; k++) {
+        const nk = (k + 1) % 5;
+        shieldIndicesR.push(sA + k, sA + nk, sB + nk, sA + k, sB + nk, sB + k);
+        shieldIndicesL.push(sA + k, sA + nk, sB + nk, sA + k, sB + nk, sB + k);
+      }
+
       const rA = i * 4;
       const rB = (i + 1) * 4;
       railIndices.push(rA, rA + 1, rB + 1, rA, rB + 1, rB);
       railIndices.push(rA + 2, rA + 3, rB + 3, rA + 2, rB + 3, rB + 2);
+      glassIndices.push(rA, rA + 1, rB + 1, rA, rB + 1, rB);
+      glassIndices.push(rA + 2, rB + 3, rA + 3, rA + 2, rB + 2, rB + 3);
     }
 
-    const addEndWall = (st, dirSign, height) => {
+    const addEndWall = (st, dirSign, visualHeight, physHeight) => {
       const wallCenter = st.pos
         .clone()
-        .addScaledVector(st.U, height * 0.5)
+        .addScaledVector(st.U, visualHeight * 0.5)
         .addScaledVector(st.T, dirSign * 0.35);
-      const wallBox = new THREE.BoxGeometry(this.config.trackWidth + wallT * 2, height, 0.7);
+      const wallBox = new THREE.BoxGeometry(this.config.trackWidth + wallT * 2, visualHeight, 0.7);
+      const darkTrackMul = mapCfg?._darkCfg?.trackMul ?? 1.0;
       const wallMat = new THREE.MeshStandardMaterial({
-        color: mapCfg?.pylonColor ?? 0x262f3f,
+        color: scaleHexColorInt(mapCfg?.pylonColor ?? 0x262f3f, darkTrackMul),
         roughness: 0.45,
         metalness: 0.55,
       });
@@ -2666,27 +3120,31 @@ class MarbleRushApp {
       wallMesh.receiveShadow = true;
       this.trackGroup.add(wallMesh);
 
+      const physCenter = st.pos
+        .clone()
+        .addScaledVector(st.U, physHeight * 0.5)
+        .addScaledVector(st.T, dirSign * 0.35);
       const frictionCfg = FRICTION_PRESETS[this.config.frictionPreset];
       const rb = this.world.createRigidBody(
         RAPIER.RigidBodyDesc.fixed()
-          .setTranslation(wallCenter.x, wallCenter.y, wallCenter.z)
+          .setTranslation(physCenter.x, physCenter.y, physCenter.z)
           .setRotation(st.quat)
       );
       const col = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(
           (this.config.trackWidth + wallT * 2) * 0.5,
-          height * 0.5,
+          physHeight * 0.5,
           0.35
         )
           .setFriction(frictionCfg.friction)
-          .setRestitution(0.55),
+          .setRestitution(0.45),
         rb
       );
       this.colliderMeta.set(col.handle, { kind: 'wall' });
     };
 
-    addEndWall(stations[0], -1, wallH);
-    addEndWall(stations[stations.length - 1], 1, wallH + 0.6);
+    addEndWall(stations[0], -1, wallH + 0.3, 5.8);
+    addEndWall(stations[stations.length - 1], 1, wallH + 0.7, 5.8);
 
     const trackGeo = new THREE.BufferGeometry();
     trackGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -2699,14 +3157,31 @@ class MarbleRushApp {
       normalMap: this.shared.trackNormalTex,
       normalScale: new THREE.Vector2(0.55, 0.55),
       roughnessMap: this.shared.trackRoughnessTex,
-      roughness: this.config.frictionPreset === 'ice' ? 0.16 : 0.78,
-      metalness: 0.24,
-      envMapIntensity: 1.25,
+      roughness: this.config.frictionPreset === 'ice' ? 0.18 : 0.84,
+      metalness: 0.08,
+      envMapIntensity: 0.9,
     });
     const trackMesh = new THREE.Mesh(trackGeo, trackMat);
     trackMesh.castShadow = true;
     trackMesh.receiveShadow = true;
     this.trackGroup.add(trackMesh);
+
+    const glassGeo = new THREE.BufferGeometry();
+    glassGeo.setAttribute('position', new THREE.Float32BufferAttribute(glassPositions, 3));
+    glassGeo.setAttribute('uv', new THREE.Float32BufferAttribute(glassUvs, 2));
+    glassGeo.setIndex(glassIndices);
+    glassGeo.computeVertexNormals();
+    const glassMat = new THREE.MeshPhysicalMaterial({
+      color: 0xdbeafe,
+      transparent: true,
+      opacity: 0.13,
+      roughness: 0.14,
+      metalness: 0.08,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    const glassMesh = new THREE.Mesh(glassGeo, glassMat);
+    this.trackGroup.add(glassMesh);
 
     const railGeo = new THREE.BufferGeometry();
     railGeo.setAttribute('position', new THREE.Float32BufferAttribute(railPositions, 3));
@@ -2715,9 +3190,9 @@ class MarbleRushApp {
     railGeo.computeVertexNormals();
 
     const railMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.railColor ?? 0x64748b,
-      roughness: 0.24,
-      metalness: 0.88,
+      color: scaleHexColorInt(mapCfg?.railColor ?? 0x6f767e, mapCfg?._darkCfg?.trackMul ?? 1.0),
+      roughness: 0.38,
+      metalness: 0.72,
       side: THREE.DoubleSide,
     });
     const railMesh = new THREE.Mesh(railGeo, railMat);
@@ -2725,45 +3200,82 @@ class MarbleRushApp {
     railMesh.receiveShadow = true;
     this.trackGroup.add(railMesh);
 
-    // Map-themed emissive inner-curb guide strips
-    const ledPositions = [];
-    const ledIndices = [];
+    // Slender safety-fence stanchion posts along both sides every 6m
+    const postPositions = [];
+    for (let i = 0; i < numStations; i += 12) {
+      const st = stations[i];
+      for (const side of [-1, 1]) {
+        const px = side * (halfW + 0.12);
+        const py = wallH + (shieldTopY - wallH) * 0.5;
+        postPositions.push({
+          pos: new THREE.Vector3(
+            st.pos.x + st.R.x * px + st.U.x * py,
+            st.pos.y + st.R.y * px + st.U.y * py,
+            st.pos.z + st.R.z * px + st.U.z * py
+          ),
+          quat: st.quat,
+        });
+      }
+    }
+    if (postPositions.length > 0) {
+      const postGeo = new THREE.BoxGeometry(0.12, shieldTopY - wallH + 0.12, 0.14);
+      const postIM = new THREE.InstancedMesh(postGeo, railMat, postPositions.length);
+      for (let i = 0; i < postPositions.length; i++) {
+        this._dummy.position.copy(postPositions[i].pos);
+        this._dummy.quaternion.copy(postPositions[i].quat);
+        this._dummy.scale.set(1, 1, 1);
+        this._dummy.updateMatrix();
+        postIM.setMatrixAt(i, this._dummy.matrix);
+      }
+      postIM.instanceMatrix.needsUpdate = true;
+      postIM.computeBoundingSphere();
+      this.trackGroup.add(postIM);
+    }
+
+    // Painted matte motorsport rumble curbs flanking both track shoulders (non-emissive)
+    const curbPositions = [];
+    const curbUvs = [];
+    const curbIndices = [];
     for (let i = 0; i < numStations; i++) {
       const st = stations[i];
+      const vCurb = st.s * 0.45;
       const pts = [
-        [-halfW + 0.03, curbH + 0.14],
-        [-halfW + 0.03, curbH + 0.22],
-        [halfW - 0.03, curbH + 0.14],
-        [halfW - 0.03, curbH + 0.22],
+        [-halfW + 0.02, curbH + 0.02],
+        [-halfW + 0.02, curbH + 0.16],
+        [halfW - 0.02, curbH + 0.02],
+        [halfW - 0.02, curbH + 0.16],
       ];
       for (let k = 0; k < 4; k++) {
-        ledPositions.push(
+        curbPositions.push(
           st.pos.x + st.R.x * pts[k][0] + st.U.x * pts[k][1],
           st.pos.y + st.R.y * pts[k][0] + st.U.y * pts[k][1],
           st.pos.z + st.R.z * pts[k][0] + st.U.z * pts[k][1]
         );
+        curbUvs.push(k % 2, vCurb);
       }
     }
     for (let i = 0; i < numStations - 1; i++) {
       const a = i * 4;
       const b = (i + 1) * 4;
-      ledIndices.push(a, a + 1, b + 1, a, b + 1, b);
-      ledIndices.push(a + 2, b + 3, a + 3, a + 2, b + 2, b + 3);
+      curbIndices.push(a, a + 1, b + 1, a, b + 1, b);
+      curbIndices.push(a + 2, b + 3, a + 3, a + 2, b + 2, b + 3);
     }
-    const ledGeo = new THREE.BufferGeometry();
-    ledGeo.setAttribute('position', new THREE.Float32BufferAttribute(ledPositions, 3));
-    ledGeo.setIndex(ledIndices);
-    ledGeo.computeVertexNormals();
-    const ledMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.curbColor ?? 0xf59e0b,
-      emissive: mapCfg?.curbEmissive ?? 0xd97706,
-      emissiveIntensity: 0.95,
-      roughness: 0.3,
+    const curbGeo = new THREE.BufferGeometry();
+    curbGeo.setAttribute('position', new THREE.Float32BufferAttribute(curbPositions, 3));
+    curbGeo.setAttribute('uv', new THREE.Float32BufferAttribute(curbUvs, 2));
+    curbGeo.setIndex(curbIndices);
+    curbGeo.computeVertexNormals();
+    const curbMat = new THREE.MeshStandardMaterial({
+      map: this.shared.rumbleTex,
+      roughness: 0.72,
+      metalness: 0.05,
       side: THREE.DoubleSide,
     });
-    this.trackGroup.add(new THREE.Mesh(ledGeo, ledMat));
+    const curbMesh = new THREE.Mesh(curbGeo, curbMat);
+    curbMesh.receiveShadow = true;
+    this.trackGroup.add(curbMesh);
 
-    // Rapier Trimesh Collider from the solid track shell
+    // Rapier Trimesh Collider from the solid track shell + upper containment walls
     const frictionCfg = FRICTION_PRESETS[this.config.frictionPreset];
     const vertsF32 = new Float32Array(positions);
     const idxU32 = new Uint32Array(indices);
@@ -2773,53 +3285,311 @@ class MarbleRushApp {
       .setRestitution(frictionCfg.restitution);
     const trackCollider = this.world.createCollider(trimeshCol, trackBody);
     this.colliderMeta.set(trackCollider.handle, { kind: 'track' });
+
+    const shieldRCol = this.world.createCollider(
+      RAPIER.ColliderDesc.trimesh(new Float32Array(shieldVertsR), new Uint32Array(shieldIndicesR))
+        .setFriction(0.08)
+        .setRestitution(0.42),
+      trackBody
+    );
+    this.colliderMeta.set(shieldRCol.handle, { kind: 'wall' });
+
+    const shieldLCol = this.world.createCollider(
+      RAPIER.ColliderDesc.trimesh(new Float32Array(shieldVertsL), new Uint32Array(shieldIndicesL))
+        .setFriction(0.08)
+        .setRestitution(0.42),
+      trackBody
+    );
+    this.colliderMeta.set(shieldLCol.handle, { kind: 'wall' });
   }
 
   buildEnvironmentFloorAndSupports(mapCfg) {
     const { stations, bounds } = this.trackData;
-    const groundY = bounds.minY - 6.0;
+    const mapKey = this.config.mapPreset || 'expedition';
+    const seed = this.trackSeed + 101;
     const centerX = bounds.centerX;
     const centerZ = bounds.centerZ;
+    const baseElevation = bounds.minY - 3.6;
+    const waterY = bounds.minY + (mapCfg?.waterLevelOffset ?? -2.6);
 
-    // Grounded arena plane sized generously for long tracks & top-down overview
-    const groundSize = Math.max(950, Math.max(bounds.spanX, bounds.spanZ) * 4.5);
-    const groundGeo = new THREE.PlaneGeometry(groundSize, groundSize);
-    groundGeo.rotateX(-Math.PI / 2);
-    const groundMat = new THREE.MeshStandardMaterial({
+    const groundSize = Math.max(760, Math.max(bounds.spanX, bounds.spanZ) * 4.4);
+    const segs = isSoftwareGl ? 56 : 84;
+    const cols = segs + 1;
+    const terrainGeo = new THREE.PlaneGeometry(groundSize, groundSize, segs, segs);
+    terrainGeo.rotateX(-Math.PI / 2);
+
+    // Coarse track station lookup for corridor carving & multi-territory blending
+    const coarse = [];
+    for (let i = 0; i < stations.length; i += 3) {
+      const st = stations[i];
+      coarse.push({
+        x: st.pos.x,
+        y: st.pos.y,
+        z: st.pos.z,
+        u: THREE.MathUtils.clamp(st.s / Math.max(1, this.config.distanceMeters), 0, 1),
+      });
+    }
+
+    const halfW = this.config.trackWidth * 0.5;
+    const corridorHalf = halfW + 3.4;
+    const shoulderReach = corridorHalf + 15.0;
+    const overlapRadius = this.config.trackWidth * 2.2 + 4.0;
+    const overlapRadiusSq = overlapRadius * overlapRadius;
+
+    const posAttr = terrainGeo.attributes.position;
+    const vertCount = posAttr.count;
+    const heightGrid = new Float32Array(vertCount);
+    const zoneWeightsCache = new Array(vertCount);
+
+    for (let v = 0; v < vertCount; v++) {
+      const wx = posAttr.getX(v) + centerX;
+      const wz = posAttr.getZ(v) + centerZ;
+
+      let minDistSq = Infinity;
+      let nearestIdx = 0;
+      let lowestNearbyY = Infinity;
+      for (let k = 0; k < coarse.length; k++) {
+        const c = coarse[k];
+        const dx = wx - c.x;
+        const dz = wz - c.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          nearestIdx = k;
+        }
+        if (dSq < overlapRadiusSq && c.y < lowestNearbyY) {
+          lowestNearbyY = c.y;
+        }
+      }
+
+      const nearest = coarse[nearestIdx];
+      const distToTrack = Math.sqrt(minDistSq);
+      const weights = evaluateTerritoryWeights(nearest.u, wx, wz, mapKey, seed);
+      zoneWeightsCache[v] = weights;
+
+      // Natural geomorphology blended across active territories
+      const nMacro = fbm2D(wx * 0.009, wz * 0.009, seed + 7, 4);
+      const nDetail = fbm2D(wx * 0.032, wz * 0.032, seed + 53, 3);
+      const ridge = 1.0 - Math.abs(fbm2D(wx * 0.0075, wz * 0.0075, seed + 131, 3) * 2 - 1);
+
+      const hAlpine = (nMacro - 0.38) * 28 + Math.pow(ridge, 1.8) * 32 + (nDetail - 0.5) * 4.5;
+      const hArctic = (nMacro - 0.36) * 26 + Math.pow(ridge, 2.2) * 38 + (nDetail - 0.5) * 5.0;
+      // Terraced canyon mesas & eroded gorges
+      const mesaStep = Math.floor(Math.max(0, nMacro - 0.38) * 6.5) / 6.5;
+      const hCanyon = mesaStep * 34 + (nDetail - 0.5) * 3.8 + (ridge > 0.7 ? (ridge - 0.7) * 28 : 0);
+      // Savanna rolling plains with occasional rocky kopjes
+      const kopje = nMacro > 0.72 ? (nMacro - 0.72) * 34 : 0;
+      const hSavanna = (nMacro - 0.45) * 9.5 + kopje + (nDetail - 0.5) * 2.2;
+      // Coastal headlands sloping down toward ocean basin on outer side
+      const coastSlope = THREE.MathUtils.clamp((wx - centerX) * 0.035, -1, 1);
+      const hCoastal = coastSlope * -8.5 + (nMacro - 0.42) * 18 + (nDetail - 0.5) * 3.0;
+      // Volcanic jagged basalt calderas & dark obsidian ridges
+      const hVolcanic = Math.pow(ridge, 1.45) * 36 + (nMacro - 0.44) * 20 + (nDetail - 0.5) * 6.2;
+      // Misty Bamboo Highlands: lush terraced karst hills
+      const bambooTerrace = Math.floor(Math.max(0, nMacro - 0.32) * 5.0) / 5.0;
+      const hBamboo = bambooTerrace * 24 + Math.pow(ridge, 1.6) * 22 + (nDetail - 0.5) * 3.4;
+      // Golden Dunes: wind-sculpted desert sand waves
+      const duneWave = Math.sin(wx * 0.035 + wz * 0.02 + nMacro * 5.0) * 5.2;
+      const hBadlands = (nMacro - 0.44) * 15 + duneWave + (nDetail - 0.5) * 1.6;
+      // Autumn Timberland: rolling forested mountain valleys
+      const hAutumn = (nMacro - 0.4) * 24 + Math.pow(ridge, 1.5) * 22 + (nDetail - 0.5) * 4.0;
+
+      let rawOffset =
+        weights.alpine * hAlpine +
+        weights.arctic * hArctic +
+        weights.canyon * hCanyon +
+        weights.savanna * hSavanna +
+        weights.coastal * hCoastal +
+        weights.volcanic * hVolcanic +
+        weights.bamboo * hBamboo +
+        weights.badlands * hBadlands +
+        weights.autumn * hAutumn;
+
+      // Frame the racing valley cleanly with distant mountain ridges outside track corridor
+      const rimLift = THREE.MathUtils.smoothstep(distToTrack, 24, 105) * (6.0 + ridge * 16.0);
+      let wy = Math.min(nearest.y, baseElevation + 2.5) + rawOffset + rimLift;
+
+      // Carve track roadbed & soft earthen shoulder embankments cleanly beneath lowest deck
+      const roadbedY = (Number.isFinite(lowestNearbyY) ? lowestNearbyY : nearest.y) - 0.76;
+      if (distToTrack < shoulderReach) {
+        const tCarve = THREE.MathUtils.smoothstep(distToTrack, corridorHalf, shoulderReach);
+        wy = THREE.MathUtils.lerp(roadbedY, wy, tCarve);
+      }
+
+      posAttr.setY(v, wy);
+      heightGrid[v] = wy;
+    }
+
+    terrainGeo.computeVertexNormals();
+    const normAttr = terrainGeo.attributes.normal;
+    const colArr = new Float32Array(vertCount * 3);
+
+    const terrainMul = mapCfg?._darkCfg?.terrainMul ?? 1.0;
+    const satBoost = mapCfg?._darkCfg?.satBoost ?? 1.0;
+    const cFlat = new THREE.Color();
+    const cRock = new THREE.Color();
+    const cHigh = new THREE.Color();
+    const cGravel = new THREE.Color(scaleHexColorInt(0x6b655a, terrainMul, satBoost));
+    const cShore = new THREE.Color(scaleHexColorInt(0xcab58a, terrainMul, satBoost));
+
+    const tmpA = new THREE.Color();
+    const tmpC = new THREE.Color();
+    const paletteFlat = {
+      alpine: 0x456336,
+      arctic: 0xd9e2ea,
+      canyon: 0xb05d3a,
+      savanna: 0x9b8244,
+      coastal: 0x526b42,
+      volcanic: 0x2c2928,
+      bamboo: 0x355c3c,
+      badlands: 0xc29a58,
+      autumn: 0x7a5732,
+    };
+    const paletteRock = {
+      alpine: 0x5d646b,
+      arctic: 0x414a55,
+      canyon: 0x7e3923,
+      savanna: 0x6f5743,
+      coastal: 0x827d73,
+      volcanic: 0x1a1b1f,
+      bamboo: 0x4e5955,
+      badlands: 0x8f693e,
+      autumn: 0x57544e,
+    };
+
+    for (let v = 0; v < vertCount; v++) {
+      const wx = posAttr.getX(v) + centerX;
+      const wy = heightGrid[v];
+      const wz = posAttr.getZ(v) + centerZ;
+      const ny = normAttr.getY(v);
+      const w = zoneWeightsCache[v];
+
+      cFlat.setRGB(0, 0, 0);
+      cRock.setRGB(0, 0, 0);
+      for (const k of Object.keys(w)) {
+        if (w[k] <= 0.001) continue;
+        tmpA.setHex(paletteFlat[k]);
+        cFlat.r += tmpA.r * w[k];
+        cFlat.g += tmpA.g * w[k];
+        cFlat.b += tmpA.b * w[k];
+        tmpC.setHex(paletteRock[k]);
+        cRock.r += tmpC.r * w[k];
+        cRock.g += tmpC.g * w[k];
+        cRock.b += tmpC.b * w[k];
+      }
+
+      // Slope-based cliff rock exposure
+      const slopeMix = THREE.MathUtils.smoothstep(1 - ny, 0.08, 0.34);
+      tmpA.copy(cFlat).lerp(cRock, slopeMix);
+
+      // High-altitude snow line on alpine/arctic peaks
+      const snowBias = w.arctic * 0.9 + w.alpine * 0.55;
+      if (snowBias > 0.1 && wy > bounds.maxY + 4.5) {
+        const snowAmt = THREE.MathUtils.smoothstep(wy, bounds.maxY + 4.5, bounds.maxY + 18) * snowBias;
+        cHigh.setHex(0xeaf0f5);
+        tmpA.lerp(cHigh, snowAmt * 0.85);
+      }
+
+      if (terrainMul < 0.999 || satBoost > 1.001) {
+        tmpA.getHSL(_depthHsl);
+        tmpA.setHSL(
+          _depthHsl.h,
+          Math.min(1, _depthHsl.s * satBoost),
+          Math.max(0.03, Math.min(0.95, _depthHsl.l * terrainMul))
+        );
+      }
+
+      // Sandy shoreline near water level
+      if (mapCfg?.hasWater && wy < waterY + 1.3) {
+        const shoreAmt = THREE.MathUtils.smoothstep(waterY + 1.3, waterY - 0.6, wy);
+        tmpA.lerp(cShore, shoreAmt * 0.72);
+      }
+
+      // Natural gravel shoulder tinting close to track
+      const nTone = (fbm2D(wx * 0.06, wz * 0.06, seed + 211, 2) - 0.5) * 0.08 * terrainMul;
+      tmpA.offsetHSL(0, 0, nTone);
+
+      // Blend subtly toward compacted gravel near track height where steep slopes carve walls
+      if (slopeMix < 0.25 && ny > 0.95 && Math.abs(wy - (bounds.minY - 0.76)) < 0.9) {
+        tmpA.lerp(cGravel, 0.18);
+      }
+
+      colArr[v * 3] = tmpA.r;
+      colArr[v * 3 + 1] = tmpA.g;
+      colArr[v * 3 + 2] = tmpA.b;
+    }
+
+    terrainGeo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+
+    const terrainMat = new THREE.MeshStandardMaterial({
       map: this.shared.floorTex,
-      roughness: 0.85,
-      metalness: 0.15,
+      vertexColors: true,
+      roughness: 0.92,
+      metalness: 0.03,
     });
-    const groundMesh = new THREE.Mesh(groundGeo, groundMat);
-    groundMesh.position.set(centerX, groundY, centerZ);
-    groundMesh.receiveShadow = true;
-    this.trackGroup.add(groundMesh);
+    const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
+    terrainMesh.position.set(centerX, 0, centerZ);
+    terrainMesh.receiveShadow = true;
+    this.trackGroup.add(terrainMesh);
 
-    // Architectural steel support pylons every ~18m
+    const sampleHeight = (wx, wz) => {
+      const lx = wx - centerX + groundSize * 0.5;
+      const lz = wz - centerZ + groundSize * 0.5;
+      const gx = THREE.MathUtils.clamp((lx / groundSize) * segs, 0, segs - 0.001);
+      const gz = THREE.MathUtils.clamp((lz / groundSize) * segs, 0, segs - 0.001);
+      const ix = Math.floor(gx);
+      const iz = Math.floor(gz);
+      const fx = gx - ix;
+      const fz = gz - iz;
+      const h00 = heightGrid[iz * cols + ix];
+      const h10 = heightGrid[iz * cols + (ix + 1)];
+      const h01 = heightGrid[(iz + 1) * cols + ix];
+      const h11 = heightGrid[(iz + 1) * cols + (ix + 1)];
+      return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz;
+    };
+
+    // Reflective Valley Lakes / Fjord / Coastal Ocean Water Plane
+    if (mapCfg?.hasWater) {
+      const waterGeo = new THREE.PlaneGeometry(groundSize * 0.98, groundSize * 0.98);
+      waterGeo.rotateX(-Math.PI / 2);
+      const waterMat = new THREE.MeshStandardMaterial({
+        color: scaleHexColorInt(mapCfg.waterColor ?? 0x205d79, terrainMul),
+        normalMap: this.shared.trackNormalTex,
+        normalScale: new THREE.Vector2(0.16, 0.16),
+        roughness: 0.14,
+        metalness: 0.35,
+        envMapIntensity: 1.15,
+      });
+      this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
+      this.waterMesh.position.set(centerX, waterY, centerZ);
+      this.waterMesh.userData.baseY = waterY;
+      this.waterMesh.receiveShadow = false;
+      this.trackGroup.add(this.waterMesh);
+    }
+
+    // Grounded Concrete/Steel Viaduct Piers anchored to exact terrain elevation
+    const darkTrackMul = mapCfg?._darkCfg?.trackMul ?? 1.0;
     const pillarMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.pylonColor ?? 0x1e2533,
-      roughness: 0.45,
-      metalness: 0.68,
+      color: scaleHexColorInt(mapCfg?.pylonColor ?? 0x4c5258, darkTrackMul),
+      roughness: 0.68,
+      metalness: 0.25,
     });
     const footMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.railColor ?? 0x334155,
-      roughness: 0.4,
-      metalness: 0.75,
+      color: scaleHexColorInt(mapCfg?.railColor ?? 0x6f767e, darkTrackMul),
+      roughness: 0.72,
+      metalness: 0.22,
     });
 
-    for (let i = 4; i < stations.length - 4; i += 36) {
+    for (let i = 4; i < stations.length - 4; i += 34) {
       const st = stations[i];
-      const topY = st.pos.y - 0.65;
-      const colH = topY - groundY;
-      if (colH <= 0.5) continue;
-
       const pylonGroup = new THREE.Group();
       const offsetX = this.config.trackWidth * 0.42;
 
       for (const side of [-1, 1]) {
         const legPos = st.pos.clone().addScaledVector(st.R, side * offsetX);
-        const legH = legPos.y - 0.5 - groundY;
-        if (legH <= 0.4) continue;
+        const legGroundY = Math.min(sampleHeight(legPos.x, legPos.z), mapCfg?.hasWater ? waterY - 1.2 : Infinity);
+        const legH = legPos.y - 0.55 - legGroundY;
+        if (legH <= 0.75) continue;
 
         let blockedBelow = false;
         if (this.config.trackType === 'spiral') {
@@ -2838,123 +3608,204 @@ class MarbleRushApp {
         }
         if (blockedBelow) continue;
 
-        const legGeo = new THREE.CylinderGeometry(0.28, 0.36, legH, 10);
+        const legGeo = new THREE.CylinderGeometry(0.3, 0.42, legH + 0.5, 10);
         const leg = new THREE.Mesh(legGeo, pillarMat);
-        leg.position.set(legPos.x, groundY + legH * 0.5, legPos.z);
+        leg.position.set(legPos.x, legGroundY + legH * 0.5 - 0.15, legPos.z);
         leg.castShadow = true;
         leg.receiveShadow = true;
         pylonGroup.add(leg);
 
-        const footGeo = new THREE.CylinderGeometry(0.65, 0.75, 0.35, 12);
+        const footGeo = new THREE.CylinderGeometry(0.68, 0.82, 0.45, 10);
         const foot = new THREE.Mesh(footGeo, footMat);
-        foot.position.set(legPos.x, groundY + 0.175, legPos.z);
+        foot.position.set(legPos.x, legGroundY + 0.15, legPos.z);
         foot.receiveShadow = true;
         pylonGroup.add(foot);
       }
 
-      this.trackGroup.add(pylonGroup);
+      if (pylonGroup.children.length > 0) {
+        this.trackGroup.add(pylonGroup);
+      }
     }
 
-    // Scenic Map Landmarks arranged safely outside the track bounding footprint
-    this.buildScenicLandmarks(mapCfg, bounds, groundY);
+    this.buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed);
   }
 
-  buildScenicLandmarks(mapCfg, bounds, groundY) {
-    const rng = mulberry32(this.trackSeed * 3571 + 41);
-    const kind = mapCfg?.landmarkKind || 'peaks';
-    const baseMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.landmarkColor ?? 0x26354a,
-      roughness: kind === 'glaciers' ? 0.18 : 0.78,
-      metalness: kind === 'towers' ? 0.65 : 0.12,
-      flatShading: true,
+  buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed) {
+    const rng = mulberry32(seed * 7919 + 31);
+    const halfW = this.config.trackWidth * 0.5;
+    const safeClearance = halfW + 6.4;
+    const safeClearanceSq = safeClearance * safeClearance;
+    const hasWater = Boolean(mapCfg?.hasWater);
+    const terrainMul = mapCfg?._darkCfg?.terrainMul ?? 1.0;
+
+    const scatterR = Math.min(260, Math.max(bounds.spanX, bounds.spanZ) * 0.85 + 70);
+    const trunkMats = new THREE.MeshStandardMaterial({
+      color: scaleHexColorInt(0x4f3b2b, terrainMul),
+      roughness: 0.92,
+      metalness: 0.02,
     });
-    const accentMat = new THREE.MeshStandardMaterial({
-      color: mapCfg?.landmarkAccent ?? 0xcbd5e1,
-      emissive: kind === 'towers' || kind === 'basalt' ? mapCfg.landmarkAccent : 0x000000,
-      emissiveIntensity: kind === 'towers' ? 1.1 : kind === 'basalt' ? 0.85 : 0,
-      roughness: 0.35,
-      flatShading: true,
-    });
+    const pineFoliageMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.86, metalness: 0.02, flatShading: true });
+    const acaciaCanopyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0.02, flatShading: true });
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.92, metalness: 0.04, flatShading: true });
 
-    const ringMinRx = bounds.spanX * 0.5 + 22;
-    const ringMinRz = bounds.spanZ * 0.5 + 22;
-    const count = 28;
+    const pineTransforms = [];
+    const pineColors = [];
+    const acaciaTransforms = [];
+    const acaciaColors = [];
+    const rockTransforms = [];
+    const rockColors = [];
 
-    for (let i = 0; i < count; i++) {
-      const angle = (i / count) * Math.PI * 2 + (rng() - 0.5) * 0.16;
-      const distMult = 1.0 + rng() * 0.65;
-      const x = bounds.centerX + Math.cos(angle) * ringMinRx * distMult;
-      const z = bounds.centerZ + Math.sin(angle) * ringMinRz * distMult;
-      const scaleH = 14 + rng() * 34;
-      const radius = 5 + rng() * 9;
+    const tmpCol = new THREE.Color();
+    const candidates = isSoftwareGl ? 190 : 380;
 
-      if (kind === 'peaks') {
-        const cone = new THREE.Mesh(new THREE.ConeGeometry(radius, scaleH, 6), baseMat);
-        cone.position.set(x, groundY + scaleH * 0.5, z);
-        cone.rotation.y = rng() * Math.PI;
-        this.trackGroup.add(cone);
+    for (let i = 0; i < candidates; i++) {
+      const wx = bounds.centerX + (rng() - 0.5) * scatterR * 2;
+      const wz = bounds.centerZ + (rng() - 0.5) * scatterR * 2;
 
-        const cap = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.42, scaleH * 0.38, 6), accentMat);
-        cap.position.set(x, groundY + scaleH * 0.81, z);
-        cap.rotation.y = cone.rotation.y;
-        this.trackGroup.add(cap);
-      } else if (kind === 'mesas') {
-        const h = 10 + rng() * 22;
-        const mesa = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius * 1.1, h, 7), baseMat);
-        mesa.position.set(x, groundY + h * 0.5, z);
-        mesa.rotation.y = rng() * Math.PI;
-        this.trackGroup.add(mesa);
-
-        const strata = new THREE.Mesh(
-          new THREE.CylinderGeometry(radius * 0.84, radius * 0.92, h * 0.22, 7),
-          accentMat
-        );
-        strata.position.set(x, groundY + h * 0.68, z);
-        strata.rotation.y = mesa.rotation.y;
-        this.trackGroup.add(strata);
-      } else if (kind === 'towers') {
-        const h = 16 + rng() * 32;
-        const w = 3.2 + rng() * 3.5;
-        const tower = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), baseMat);
-        tower.position.set(x, groundY + h * 0.5, z);
-        this.trackGroup.add(tower);
-
-        const crown = new THREE.Mesh(new THREE.BoxGeometry(w + 0.25, 0.55, w + 0.25), accentMat);
-        crown.position.set(x, groundY + h - 0.6, z);
-        this.trackGroup.add(crown);
-      } else if (kind === 'glaciers') {
-        const h = 12 + rng() * 28;
-        const spire = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.75, h, 5), baseMat);
-        spire.position.set(x, groundY + h * 0.48, z);
-        spire.rotation.set((rng() - 0.5) * 0.2, rng() * Math.PI, (rng() - 0.5) * 0.2);
-        this.trackGroup.add(spire);
-
-        const shard = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.4, h * 0.6, 5), accentMat);
-        shard.position.set(x + radius * 0.45, groundY + h * 0.28, z + radius * 0.3);
-        shard.rotation.z = -0.25;
-        this.trackGroup.add(shard);
-      } else {
-        // Volcanic basalt columns & magma vents
-        const h = 12 + rng() * 26;
-        const rock = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.45, radius * 0.78, h, 6), baseMat);
-        rock.position.set(x, groundY + h * 0.5, z);
-        this.trackGroup.add(rock);
-
-        if (i % 2 === 0) {
-          const vent = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.65, radius * 0.65, 0.25, 10), accentMat);
-          vent.position.set(x + radius * 0.9, groundY + 0.13, z);
-          this.trackGroup.add(vent);
+      let minDistSq = Infinity;
+      let nearest = coarse[0];
+      for (let k = 0; k < coarse.length; k++) {
+        const c = coarse[k];
+        const dx = wx - c.x;
+        const dz = wz - c.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          nearest = c;
         }
       }
+      if (minDistSq < safeClearanceSq) continue;
+
+      const wy = sampleHeight(wx, wz);
+      if (hasWater && wy < waterY + 0.65) continue;
+
+      const weights = evaluateTerritoryWeights(nearest.u, wx, wz, mapKey, seed);
+      const slopeCheck = Math.abs(sampleHeight(wx + 1.5, wz) - wy) + Math.abs(sampleHeight(wx, wz + 1.5) - wy);
+      const scale = 0.78 + rng() * 0.62;
+      const rotY = rng() * Math.PI * 2;
+
+      const zonePick = weights.alpine + weights.arctic * 0.85 + weights.coastal * 0.7 + weights.bamboo * 0.9 + weights.autumn * 0.95;
+      const rockTrigger =
+        slopeCheck > 1.35 ||
+        weights.canyon > 0.45 ||
+        weights.volcanic > 0.45 ||
+        weights.badlands > 0.5 ||
+        rng() < 0.28;
+
+      if (rockTrigger) {
+        const sx = (1.1 + rng() * 2.2) * scale;
+        const sy = (0.7 + rng() * (weights.canyon > 0.4 || weights.volcanic > 0.4 ? 2.6 : 1.1)) * scale;
+        const sz = (1.1 + rng() * 2.1) * scale;
+        rockTransforms.push({ x: wx, y: wy + sy * 0.3, z: wz, sx, sy, sz, rotY });
+        if (weights.canyon > 0.4) tmpCol.setHex(0x8d442b);
+        else if (weights.volcanic > 0.4) tmpCol.setHex(0x232429);
+        else if (weights.badlands > 0.45) tmpCol.setHex(0xa87d48);
+        else if (weights.arctic > 0.45) tmpCol.setHex(0x555f6b);
+        else tmpCol.setHex(0x6e716d);
+        tmpCol.offsetHSL(0, 0, (rng() - 0.5) * 0.08);
+        tmpCol.multiplyScalar(terrainMul);
+        rockColors.push(tmpCol.clone());
+      } else if (weights.savanna > 0.4) {
+        acaciaTransforms.push({ x: wx, y: wy, z: wz, scale, rotY });
+        tmpCol.setHex(0x5d7236).offsetHSL(0, (rng() - 0.5) * 0.08, (rng() - 0.5) * 0.08);
+        tmpCol.multiplyScalar(terrainMul);
+        acaciaColors.push(tmpCol.clone());
+      } else if (zonePick > 0.25) {
+        pineTransforms.push({ x: wx, y: wy, z: wz, scale, rotY });
+        if (weights.arctic > 0.45) {
+          tmpCol.setHex(rng() > 0.45 ? 0xcad6df : 0x3b594b);
+        } else if (weights.autumn > 0.42) {
+          const autumnTones = [0xb34722, 0xc97322, 0x8f291c, 0x3a542f];
+          tmpCol.setHex(autumnTones[Math.floor(rng() * autumnTones.length)]);
+        } else if (weights.bamboo > 0.42) {
+          tmpCol.setHex(rng() > 0.4 ? 0x2c6642 : 0x427549);
+        } else if (weights.coastal > 0.45) {
+          tmpCol.setHex(0x3a5d34);
+        } else {
+          tmpCol.setHex(0x2f5432);
+        }
+        tmpCol.offsetHSL(0, (rng() - 0.5) * 0.06, (rng() - 0.5) * 0.07);
+        tmpCol.multiplyScalar(terrainMul);
+        pineColors.push(tmpCol.clone());
+      }
+    }
+
+    if (pineTransforms.length > 0) {
+      const n = pineTransforms.length;
+      const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 2.2, 6);
+      trunkGeo.translate(0, 1.1, 0);
+      const coneLoGeo = new THREE.ConeGeometry(1.75, 3.6, 7);
+      coneLoGeo.translate(0, 3.2, 0);
+      const coneHiGeo = new THREE.ConeGeometry(1.2, 2.8, 7);
+      coneHiGeo.translate(0, 5.1, 0);
+
+      const trunkIM = new THREE.InstancedMesh(trunkGeo, trunkMats, n);
+      const coneLoIM = new THREE.InstancedMesh(coneLoGeo, pineFoliageMat, n);
+      const coneHiIM = new THREE.InstancedMesh(coneHiGeo, pineFoliageMat, n);
+
+      for (let i = 0; i < n; i++) {
+        const t = pineTransforms[i];
+        this._dummy.position.set(t.x, t.y - 0.15, t.z);
+        this._dummy.rotation.set(0, t.rotY, 0);
+        this._dummy.scale.setScalar(t.scale);
+        this._dummy.updateMatrix();
+        trunkIM.setMatrixAt(i, this._dummy.matrix);
+        coneLoIM.setMatrixAt(i, this._dummy.matrix);
+        coneHiIM.setMatrixAt(i, this._dummy.matrix);
+        coneLoIM.setColorAt(i, pineColors[i]);
+        coneHiIM.setColorAt(i, pineColors[i]);
+      }
+      this.trackGroup.add(trunkIM, coneLoIM, coneHiIM);
+    }
+
+    if (acaciaTransforms.length > 0) {
+      const n = acaciaTransforms.length;
+      const trunkGeo = new THREE.CylinderGeometry(0.16, 0.28, 3.4, 6);
+      trunkGeo.translate(0, 1.7, 0);
+      const canopyGeo = new THREE.CylinderGeometry(2.6, 1.4, 0.85, 8);
+      canopyGeo.translate(0, 3.6, 0);
+
+      const trunkIM = new THREE.InstancedMesh(trunkGeo, trunkMats, n);
+      const canopyIM = new THREE.InstancedMesh(canopyGeo, acaciaCanopyMat, n);
+
+      for (let i = 0; i < n; i++) {
+        const t = acaciaTransforms[i];
+        this._dummy.position.set(t.x, t.y - 0.15, t.z);
+        this._dummy.rotation.set(0, t.rotY, 0);
+        this._dummy.scale.setScalar(t.scale);
+        this._dummy.updateMatrix();
+        trunkIM.setMatrixAt(i, this._dummy.matrix);
+        canopyIM.setMatrixAt(i, this._dummy.matrix);
+        canopyIM.setColorAt(i, acaciaColors[i]);
+      }
+      this.trackGroup.add(trunkIM, canopyIM);
+    }
+
+    if (rockTransforms.length > 0) {
+      const n = rockTransforms.length;
+      const rockGeo = new THREE.DodecahedronGeometry(1.0, 0);
+      const rockIM = new THREE.InstancedMesh(rockGeo, rockMat, n);
+      rockIM.receiveShadow = true;
+
+      for (let i = 0; i < n; i++) {
+        const t = rockTransforms[i];
+        this._dummy.position.set(t.x, t.y, t.z);
+        this._dummy.rotation.set(0, t.rotY, 0);
+        this._dummy.scale.set(t.sx, t.sy, t.sz);
+        this._dummy.updateMatrix();
+        rockIM.setMatrixAt(i, this._dummy.matrix);
+        rockIM.setColorAt(i, rockColors[i]);
+      }
+      this.trackGroup.add(rockIM);
     }
   }
 
   buildCheckpoints() {
     const halfW = this.config.trackWidth * 0.5;
     const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.32,
-      metalness: 0.82,
+      color: 0x454b52,
+      roughness: 0.48,
+      metalness: 0.62,
     });
 
     this.trackData.checkpoints.forEach((cpS, idx) => {
@@ -2962,29 +3813,28 @@ class MarbleRushApp {
       const cpGroup = new THREE.Group();
 
       const cpBeaconMat = new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x0ea5e9,
-        emissiveIntensity: 1.5,
-        roughness: 0.2,
+        color: 0xd97724,
+        roughness: 0.35,
+        metalness: 0.2,
       });
       const cpStripMat = new THREE.MeshStandardMaterial({
-        color: 0x38bdf8,
-        emissive: 0x0284c7,
-        emissiveIntensity: 0.75,
-        roughness: 0.35,
+        color: 0xe6e2d8,
+        roughness: 0.78,
+        metalness: 0.04,
         polygonOffset: true,
         polygonOffsetFactor: -2,
         polygonOffsetUnits: -2,
       });
 
-      // Surface threshold line
-      const stripGeo = new THREE.PlaneGeometry(this.config.trackWidth - 0.75, 0.55);
+      // Crisp painted surface timing line
+      const stripGeo = new THREE.PlaneGeometry(this.config.trackWidth - 0.75, 0.52);
       stripGeo.rotateX(-Math.PI / 2);
       const strip = new THREE.Mesh(stripGeo, cpStripMat);
       strip.position.set(0, 0.025, 0);
+      strip.receiveShadow = true;
       cpGroup.add(strip);
 
-      // Slim side checkpoint pylons (high clearance, zero obstacle interference)
+      // Steel trackside sector posts & painted signal blocks
       for (const side of [-1, 1]) {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.75, 0.28), pillarMat);
         post.position.set(side * (halfW + 0.24), 1.38, 0);
@@ -2996,12 +3846,11 @@ class MarbleRushApp {
         cpGroup.add(beacon);
       }
 
-      // Checkpoint sign on left side
       const sign = new THREE.Mesh(
         new THREE.BoxGeometry(1.7, 0.82, 0.12),
         new THREE.MeshStandardMaterial({
-          map: createSignCanvasTexture(`CP ${idx + 1} · ${cpS}m`, '#0f172a', '#38bdf8'),
-          roughness: 0.32,
+          map: createSignCanvasTexture(`CP ${idx + 1} · ${cpS}m`, '#20221e', '#d97724'),
+          roughness: 0.42,
         })
       );
       sign.position.set(halfW + 0.55, 2.3, 0);
@@ -3033,10 +3882,8 @@ class MarbleRushApp {
     const padMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: this.shared.boosterTex,
-      emissiveMap: this.shared.boosterTex,
-      emissive: 0x22d3ee,
-      emissiveIntensity: 1.65,
-      roughness: 0.2,
+      roughness: 0.42,
+      metalness: 0.42,
       polygonOffset: true,
       polygonOffsetFactor: -3,
       polygonOffsetUnits: -3,
@@ -3098,9 +3945,9 @@ class MarbleRushApp {
     // Top gantry frame (stays fixed visually)
     const archGroup = new THREE.Group();
     const postMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.3,
-      metalness: 0.85,
+      color: 0x454b52,
+      roughness: 0.42,
+      metalness: 0.72,
     });
     const postGeo = new THREE.BoxGeometry(0.4, 3.6, 0.4);
     const halfW = this.config.trackWidth * 0.5 + 0.22;
@@ -3117,8 +3964,8 @@ class MarbleRushApp {
     const startSign = new THREE.Mesh(
       new THREE.BoxGeometry(3.2, 0.9, 0.2),
       new THREE.MeshStandardMaterial({
-        map: createSignCanvasTexture('START', '#0f172a', '#10b981'),
-        roughness: 0.3,
+        map: createSignCanvasTexture('START', '#20221e', '#2e9e66'),
+        roughness: 0.42,
       })
     );
     startSign.position.set(0, 3.6, 0.22);
@@ -3126,14 +3973,14 @@ class MarbleRushApp {
     // 3-Pod Starting Light Tree (Red -> Amber -> Green)
     this.startLightPods = [];
     const podOffsets = [-1.05, 0, 1.05];
-    const podColors = [0xef4444, 0xf59e0b, 0x10b981];
+    const podColors = [0xdc4a3a, 0xd97724, 0x2e9e66];
     for (let k = 0; k < 3; k++) {
       const podMat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
+        color: 0x24282c,
         emissive: podColors[k],
-        emissiveIntensity: 0.08,
-        roughness: 0.2,
-        metalness: 0.4,
+        emissiveIntensity: 0.06,
+        roughness: 0.3,
+        metalness: 0.35,
       });
       const pod = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12), podMat);
       pod.position.set(podOffsets[k], 2.95, 0.22);
@@ -3187,8 +4034,8 @@ class MarbleRushApp {
     stripGeo.rotateX(-Math.PI / 2);
     const stripMat = new THREE.MeshStandardMaterial({
       map: this.shared.checkerTex,
-      roughness: 0.4,
-      metalness: 0.1,
+      roughness: 0.6,
+      metalness: 0.06,
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
@@ -3199,17 +4046,17 @@ class MarbleRushApp {
     strip.receiveShadow = true;
     this.trackGroup.add(strip);
 
-    // Finish-Line Truss Arch
+    // Finish-Line Steel Truss Arch
     const archGroup = new THREE.Group();
     const metalMat = new THREE.MeshStandardMaterial({
-      color: 0x475569,
-      roughness: 0.25,
-      metalness: 0.88,
+      color: 0x4c5259,
+      roughness: 0.42,
+      metalness: 0.72,
     });
     const accentMat = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b,
-      roughness: 0.3,
-      metalness: 0.6,
+      color: 0xd97724,
+      roughness: 0.45,
+      metalness: 0.25,
     });
 
     const pillarH = 4.6;
@@ -3229,7 +4076,7 @@ class MarbleRushApp {
     const bannerGeo = new THREE.BoxGeometry(this.config.trackWidth + 0.4, 1.15, 0.16);
     const bannerMat = new THREE.MeshStandardMaterial({
       map: this.shared.checkerTex,
-      roughness: 0.35,
+      roughness: 0.52,
     });
     const banner = new THREE.Mesh(bannerGeo, bannerMat);
     banner.position.set(0, pillarH - 0.75, 0);
@@ -3237,8 +4084,8 @@ class MarbleRushApp {
     const signMesh = new THREE.Mesh(
       new THREE.BoxGeometry(3.4, 0.95, 0.22),
       new THREE.MeshStandardMaterial({
-        map: createSignCanvasTexture('FINISH', '#0f172a', '#f59e0b'),
-        roughness: 0.3,
+        map: createSignCanvasTexture('FINISH', '#20221e', '#d97724'),
+        roughness: 0.42,
       })
     );
     signMesh.position.set(0, pillarH + 0.75, 0);
@@ -3248,64 +4095,32 @@ class MarbleRushApp {
     const trimR = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.2, 0.62), accentMat);
     trimR.position.set(halfW + 0.3, 2.2, 0);
 
-    // Animated finish-line optical timing laser bar
-    const laserMat = new THREE.MeshBasicMaterial({
-      color: 0xfbbf24,
-      transparent: true,
-      opacity: 0.72,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    const laserStrip = new THREE.Mesh(
-      new THREE.BoxGeometry(this.config.trackWidth - 0.4, 0.06, 0.06),
-      laserMat
-    );
-    laserStrip.position.set(0, 2.45, 0);
-    this.finishLaserBar = laserStrip;
-
-    // Volumetric downward stadium beam cones flanking Finish Arch
-    const beamMat = new THREE.MeshBasicMaterial({
-      map: this.shared.spotBeamTex,
-      color: 0xfef3c7,
-      transparent: true,
-      opacity: 0.26,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    const spotConeGeo = new THREE.ConeGeometry(3.2, 9.0, 24, 1, true);
-    for (const side of [-1, 1]) {
-      const cone = new THREE.Mesh(spotConeGeo, beamMat);
-      cone.position.set(side * (halfW * 0.55), 4.8, 0);
-      archGroup.add(cone);
-    }
-
-    archGroup.add(pL, pR, beam, banner, signMesh, trimL, trimR, laserStrip);
+    archGroup.add(pL, pR, beam, banner, signMesh, trimL, trimR);
     archGroup.position.copy(st.pos);
     archGroup.quaternion.copy(st.quat);
     this.trackGroup.add(archGroup);
 
-    // Winner Podium beside Finish Plaza (s = L + 14m, raised lateral platform)
+    // Winner Podium beside Finish Plaza (natural stone/concrete plinth + bronze/silver/gold tops)
     const podSt = getStationAtS(this.trackData, L + 13);
     const podiumGroup = new THREE.Group();
     const basePlinth = new THREE.Mesh(
       new THREE.BoxGeometry(6.8, 0.6, 3.2),
-      new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.45, metalness: 0.5 })
+      new THREE.MeshStandardMaterial({ color: 0x484b49, roughness: 0.78, metalness: 0.1 })
     );
     basePlinth.position.set(0, 0.3, 0);
     basePlinth.receiveShadow = true;
     podiumGroup.add(basePlinth);
 
     const steps = [
-      { rank: 2, x: -2.0, h: 1.15, color: 0xcbd5e1 }, // Silver
-      { rank: 1, x: 0.0, h: 1.75, color: 0xfbbf24 },  // Gold
-      { rank: 3, x: 2.0, h: 0.8, color: 0xd97706 },   // Bronze
+      { rank: 2, x: -2.0, h: 1.15, color: 0xc2c7ce },
+      { rank: 1, x: 0.0, h: 1.75, color: 0xdba028 },
+      { rank: 3, x: 2.0, h: 0.8, color: 0xb86d32 },
     ];
 
     for (const step of steps) {
       const col = new THREE.Mesh(
         new THREE.CylinderGeometry(0.75, 0.85, step.h, 20),
-        new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.35, metalness: 0.75 })
+        new THREE.MeshStandardMaterial({ color: 0x5c605d, roughness: 0.68, metalness: 0.18 })
       );
       col.position.set(step.x, 0.6 + step.h * 0.5, 0);
       col.castShadow = true;
@@ -3315,36 +4130,34 @@ class MarbleRushApp {
         new THREE.CylinderGeometry(0.78, 0.78, 0.12, 20),
         new THREE.MeshStandardMaterial({
           color: step.color,
-          roughness: 0.22,
-          metalness: 0.88,
+          roughness: 0.28,
+          metalness: 0.78,
         })
       );
       ring.position.set(step.x, 0.6 + step.h + 0.06, 0);
       podiumGroup.add(ring);
 
-      // Podium rank plaque
       const plaque = new THREE.Mesh(
         new THREE.BoxGeometry(0.9, 0.45, 0.08),
         new THREE.MeshStandardMaterial({
-          map: createSignCanvasTexture(`${step.rank}`, '#0f172a', `#${step.color.toString(16).padStart(6, '0')}`),
-          roughness: 0.3,
+          map: createSignCanvasTexture(`${step.rank}`, '#20221e', `#${step.color.toString(16).padStart(6, '0')}`),
+          roughness: 0.42,
         })
       );
       plaque.position.set(step.x, 0.6 + step.h * 0.5, 0.82);
       podiumGroup.add(plaque);
 
-      // Trophy marble showcase placeholder (hidden until rank finishes)
       const trophy = new THREE.Mesh(
         this.shared.ballGeo,
         new THREE.MeshPhysicalMaterial({
           color: 0xffffff,
           map: this.shared.marbleTex,
-          roughness: 0.1,
-          metalness: 0.15,
-          clearcoat: 1.0,
-          clearcoatRoughness: 0.04,
+          roughness: 0.14,
+          metalness: 0.08,
+          clearcoat: 0.92,
+          clearcoatRoughness: 0.05,
           ior: 1.52,
-          envMapIntensity: 1.45,
+          envMapIntensity: 1.15,
         })
       );
       trophy.scale.setScalar(1.25);
@@ -3357,22 +4170,6 @@ class MarbleRushApp {
       this.podiumSlots.push({ rank: step.rank, mesh: trophy, baseY: baseTrophyY });
     }
 
-    // Podium spotlight volumetric beam cone
-    const podBeam = new THREE.Mesh(
-      new THREE.ConeGeometry(4.2, 11.0, 24, 1, true),
-      new THREE.MeshBasicMaterial({
-        map: this.shared.spotBeamTex,
-        color: 0xfde68a,
-        transparent: true,
-        opacity: 0.22,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      })
-    );
-    podBeam.position.set(0, 6.2, 0);
-    podiumGroup.add(podBeam);
-
     const podPos = podSt.pos
       .clone()
       .addScaledVector(podSt.R, halfW + 4.4)
@@ -3381,19 +4178,13 @@ class MarbleRushApp {
     podiumGroup.quaternion.copy(podSt.quat);
     this.trackGroup.add(podiumGroup);
 
-    // Overhead stadium floodlight gantries every ~36m
+    // Overhead timing / distance marker gantries every ~42m (matte steel, no neon light bars)
     const gantryMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.3,
-      metalness: 0.82,
+      color: 0x4a5056,
+      roughness: 0.48,
+      metalness: 0.65,
     });
-    const lampMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      emissive: 0xe2e8f0,
-      emissiveIntensity: 1.35,
-      roughness: 0.2,
-    });
-    for (let s = 22; s < L - 12; s += 36) {
+    for (let s = 26; s < L - 12; s += 42) {
       const gst = getStationAtS(this.trackData, s);
       const gantry = new THREE.Group();
       const postH = 5.4;
@@ -3402,16 +4193,11 @@ class MarbleRushApp {
       const gPostR = new THREE.Mesh(new THREE.BoxGeometry(0.32, postH, 0.32), gantryMat);
       gPostR.position.set(halfW + 0.35, postH * 0.5, 0);
       const spanBeam = new THREE.Mesh(
-        new THREE.BoxGeometry(this.config.trackWidth + 1.1, 0.3, 0.35),
+        new THREE.BoxGeometry(this.config.trackWidth + 1.1, 0.28, 0.34),
         gantryMat
       );
       spanBeam.position.set(0, postH, 0);
-      const lightBar = new THREE.Mesh(
-        new THREE.BoxGeometry(this.config.trackWidth * 0.72, 0.14, 0.26),
-        lampMat
-      );
-      lightBar.position.set(0, postH - 0.18, 0);
-      gantry.add(gPostL, gPostR, spanBeam, lightBar);
+      gantry.add(gPostL, gPostR, spanBeam);
       gantry.position.copy(gst.pos);
       gantry.quaternion.copy(gst.quat);
       this.trackGroup.add(gantry);
@@ -3468,6 +4254,90 @@ class MarbleRushApp {
           );
           this.colliderMeta.set(divCol.handle, { kind: 'hurdle', subType: 'narrow_passage' });
         }
+      }
+    } else if (this.config.trackType === 'split') {
+      // Twin-route central split islands along the course
+      const islandMat = new THREE.MeshStandardMaterial({
+        color: 0x3b434d,
+        roughness: 0.42,
+        metalness: 0.55,
+      });
+      const fractions = L >= 90 ? [0.22, 0.46, 0.70, 0.88] : [0.30, 0.68];
+      for (const frac of fractions) {
+        const s = L * frac;
+        if (s < 8 || s > L - 8) continue;
+        const st = getStationAtS(this.trackData, s);
+        const islandW = Math.min(2.0, W * 0.21);
+        const islandL = Math.min(11.0, L * 0.11);
+        const islandH = 1.25;
+        const pos = st.pos.clone().addScaledVector(st.U, islandH * 0.5);
+
+        const geo = new THREE.CylinderGeometry(islandW * 0.48, islandW * 0.66, islandH, 6);
+        const mesh = new THREE.Mesh(geo, islandMat);
+        mesh.scale.set(1, 1, islandL / (islandW * 1.2));
+        mesh.position.copy(pos);
+        mesh.quaternion.copy(st.quat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        this.trackGroup.add(mesh);
+
+        const rb = this.world.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed()
+            .setTranslation(pos.x, pos.y, pos.z)
+            .setRotation(st.quat)
+        );
+        const islandCol = this.world.createCollider(
+          RAPIER.ColliderDesc.cuboid(islandW * 0.46, islandH * 0.5, islandL * 0.46)
+            .setFriction(frictionCfg.friction)
+            .setRestitution(0.5),
+          rb
+        );
+        this.colliderMeta.set(islandCol.handle, { kind: 'hurdle', subType: 'narrow_passage' });
+      }
+    } else if (this.config.trackType === 'chicane') {
+      // Alternating physical lateral chicane curb baffles
+      const baffleMat = new THREE.MeshStandardMaterial({
+        color: 0x474f57,
+        roughness: 0.45,
+        metalness: 0.52,
+      });
+      const count = Math.max(3, Math.floor(L / 20));
+      for (let i = 0; i < count; i++) {
+        const s = THREE.MathUtils.lerp(12, L - 12, (i + 0.5) / count);
+        const st = getStationAtS(this.trackData, s);
+        const side = i % 2 === 0 ? -1 : 1;
+        const baffleW = W * 0.34;
+        const baffleH = 1.05;
+        const baffleD = 0.72;
+        const offsetX = side * (W * 0.5 - baffleW * 0.5);
+        const pos = st.pos
+          .clone()
+          .addScaledVector(st.R, offsetX)
+          .addScaledVector(st.U, baffleH * 0.5);
+
+        const baffleQuat = st.quat
+          .clone()
+          .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), side * 0.28));
+
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(baffleW, baffleH, baffleD), baffleMat);
+        mesh.position.copy(pos);
+        mesh.quaternion.copy(baffleQuat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        this.trackGroup.add(mesh);
+
+        const rb = this.world.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed()
+            .setTranslation(pos.x, pos.y, pos.z)
+            .setRotation(baffleQuat)
+        );
+        const col = this.world.createCollider(
+          RAPIER.ColliderDesc.cuboid(baffleW * 0.5, baffleH * 0.5, baffleD * 0.5)
+            .setFriction(frictionCfg.friction)
+            .setRestitution(0.52),
+          rb
+        );
+        this.colliderMeta.set(col.handle, { kind: 'hurdle', subType: 'narrow_passage' });
       }
     } else if (this.config.trackType === 'mixed') {
       // Physical split islands at 35% and 70% of track length
@@ -3613,7 +4483,7 @@ class MarbleRushApp {
       const barCol = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(barLen * 0.5, barThick * 0.5, barThick * 0.5)
           .setFriction(0.2)
-          .setRestitution(0.75),
+          .setRestitution(0.56),
         rb
       );
       this.colliderMeta.set(barCol.handle, { kind: 'hurdle', subType: 'rotating_bar' });
@@ -3665,7 +4535,7 @@ class MarbleRushApp {
       const gateCol = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(gateW * 0.5, gateH * 0.5, gateD * 0.5)
           .setFriction(0.15)
-          .setRestitution(0.65),
+          .setRestitution(0.5),
         rb
       );
       this.colliderMeta.set(gateCol.handle, { kind: 'hurdle', subType: 'moving_gate' });
@@ -3714,7 +4584,7 @@ class MarbleRushApp {
       const bumpCol = this.world.createCollider(
         RAPIER.ColliderDesc.cylinder(bumpLen * 0.5, bumpR)
           .setFriction(frictionCfg.friction)
-          .setRestitution(0.45),
+          .setRestitution(0.4),
         rb
       );
       this.colliderMeta.set(bumpCol.handle, { kind: 'hurdle', subType: 'speed_bump' });
@@ -3758,7 +4628,7 @@ class MarbleRushApp {
       const wCol1 = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(wheelW * 0.5, wheelR, bladeThick * 0.5)
           .setFriction(0.25)
-          .setRestitution(0.65),
+          .setRestitution(0.52),
         rb
       );
       const perpQuat = new THREE.Quaternion().setFromAxisAngle(
@@ -3769,7 +4639,7 @@ class MarbleRushApp {
         RAPIER.ColliderDesc.cuboid(wheelW * 0.5, wheelR, bladeThick * 0.5)
           .setRotation(perpQuat)
           .setFriction(0.25)
-          .setRestitution(0.65),
+          .setRestitution(0.52),
         rb
       );
       this.colliderMeta.set(wCol1.handle, { kind: 'hurdle', subType: 'spinning_wheel' });
@@ -3788,7 +4658,7 @@ class MarbleRushApp {
     } else if (type === 'jump_ramp') {
       const rampW = Math.min(W - 1.2, 4.2 * scale);
       const rampL = 3.2 * scale;
-      const rampH = 0.72 * scale;
+      const rampH = 0.56 * scale;
       const lateralOffset = this.config.randomHurdles
         ? (Math.random() - 0.5) * Math.max(0, W - rampW - 1.0) * 0.7
         : 0;
@@ -3853,7 +4723,7 @@ class MarbleRushApp {
       const rampCol = this.world.createCollider(
         RAPIER.ColliderDesc.convexHull(wedgeVerts)
           .setFriction(frictionCfg.friction)
-          .setRestitution(0.25),
+          .setRestitution(0.22),
         rb
       );
       this.colliderMeta.set(rampCol.handle, { kind: 'hurdle', subType: 'jump_ramp' });
@@ -3899,7 +4769,7 @@ class MarbleRushApp {
           RAPIER.ColliderDesc.cuboid(blockW * 0.5, blockH * 0.5, blockL * 0.5)
             .setTranslation(bx, blockH * 0.5, 0)
             .setFriction(frictionCfg.friction)
-            .setRestitution(0.5),
+            .setRestitution(0.48),
           rb
         );
         this.colliderMeta.set(npCol.handle, { kind: 'hurdle', subType: 'narrow_passage' });
@@ -3938,7 +4808,7 @@ class MarbleRushApp {
       const platCol = this.world.createCollider(
         RAPIER.ColliderDesc.cuboid(platW * 0.5, platH * 0.5, platL * 0.5)
           .setFriction(0.22)
-          .setRestitution(0.7),
+          .setRestitution(0.55),
         rb
       );
       this.colliderMeta.set(platCol.handle, { kind: 'hurdle', subType: 'moving_platform' });
@@ -3987,18 +4857,16 @@ class MarbleRushApp {
       const colorHex = this.ballColors[i] || '#f59e0b';
       const mat = new THREE.MeshPhysicalMaterial({
         color: new THREE.Color(colorHex),
+        emissive: new THREE.Color(colorHex),
+        emissiveIntensity: 0.22,
         map: this.shared.marbleTex,
-        roughness: 0.08,
-        metalness: 0.14,
-        clearcoat: 1.0,
-        clearcoatRoughness: 0.03,
-        iridescence: 0.22,
-        iridescenceIOR: 1.35,
-        sheen: 0.14,
-        sheenRoughness: 0.3,
-        ior: 1.52,
-        reflectivity: 0.98,
-        envMapIntensity: 1.65,
+        roughness: 0.16,
+        metalness: 0.02,
+        clearcoat: 0.85,
+        clearcoatRoughness: 0.06,
+        ior: 1.5,
+        reflectivity: 0.82,
+        envMapIntensity: 0.65,
       });
 
       const mesh = new THREE.Mesh(this.shared.ballGeo, mat);
@@ -4019,8 +4887,8 @@ class MarbleRushApp {
       const rbDesc = RAPIER.RigidBodyDesc.dynamic()
         .setTranslation(spawnPos.x, spawnPos.y, spawnPos.z)
         .setCcdEnabled(true)
-        .setLinearDamping(0.04)
-        .setAngularDamping(0.03);
+        .setLinearDamping(0.015)
+        .setAngularDamping(0.015);
 
       const body = this.world.createRigidBody(rbDesc);
       const colDesc = RAPIER.ColliderDesc.ball(BALL_RADIUS)
@@ -4051,11 +4919,11 @@ class MarbleRushApp {
         finishRank: null,
         rank: i + 1,
         worldPos: spawnPos.clone(),
+        prevPos: spawnPos.clone(),
+        currPos: spawnPos.clone(),
+        prevQuat: new THREE.Quaternion(),
+        currQuat: new THREE.Quaternion(),
       });
-    }
-
-    if (this.selectedBallIndex >= count) {
-      this.selectedBallIndex = 0;
     }
   }
 
@@ -4063,6 +4931,10 @@ class MarbleRushApp {
   // Race Lifecycle Controls
   // ==========================================================================
   startRace() {
+    if (this.raceState === 'REPLAY') {
+      this.cameraMode = this.preReplayCameraMode || 'overview';
+      this.raceState = 'FINISHED';
+    }
     if (this.raceState === 'FINISHED' || this.raceState === 'RACING' || this.raceState === 'PAUSED') {
       this.rebuildTrackAndRace({ preserveCamera: true });
     }
@@ -4107,8 +4979,8 @@ class MarbleRushApp {
   generateNewTrack() {
     this.trackSeed++;
     if (this.config.cycleMapOnNewTrack) {
-      const idx = MAP_ORDER.indexOf(this.config.mapPreset);
-      this.config.mapPreset = MAP_ORDER[(idx + 1) % MAP_ORDER.length];
+      const idx = TERRITORY_ORDER.indexOf(this.config.mapPreset);
+      this.config.mapPreset = TERRITORY_ORDER[(idx + 1) % TERRITORY_ORDER.length];
       this.syncSettingsControlsToDom();
     }
     this.rebuildTrackAndRace({ preserveCamera: false });
@@ -4116,22 +4988,25 @@ class MarbleRushApp {
 
   randomizeBallColors() {
     const used = new Set();
+    const isDark = this.config.palette === 'ultradark';
     for (let i = 0; i < this.config.ballCount; i++) {
       let hex;
       if (this.config.allowDuplicateColors) {
-        hex = hslToHex(Math.random() * 360, 72 + Math.random() * 20, 48 + Math.random() * 14);
+        hex = isDark
+          ? hslToHex(Math.random() * 360, 92 + Math.random() * 8, 30 + Math.random() * 11)
+          : hslToHex(Math.random() * 360, 72 + Math.random() * 20, 48 + Math.random() * 14);
       } else {
-        hex = generateDistinctColor(Math.floor(Math.random() * 100) + i, used);
+        hex = generateDistinctColor(Math.floor(Math.random() * 100) + i, used, this.config.palette);
         used.add(hex);
       }
       this.ballColors[i] = hex;
       if (this.balls[i]) {
         this.balls[i].color = hex;
         this.balls[i].mesh.material.color.set(hex);
+        this.balls[i].mesh.material.emissive.set(hex);
       }
     }
     this.renderBallColorEditor();
-    this.updateFollowBallSelect();
     this.updateLeaderboard(true);
   }
 
@@ -4154,6 +5029,11 @@ class MarbleRushApp {
   // Physics Step & Real Progress / Finish Measurement
   // ==========================================================================
   stepSimulation(dt) {
+    if (this.raceState === 'REPLAY') {
+      this.stepReplaySimulation(dt);
+      return;
+    }
+
     if (this.raceState === 'COUNTDOWN') {
       this.countdownRemaining -= dt;
       const digit = this.countdownRemaining > 0.6 ? Math.ceil(this.countdownRemaining - 0.4) : 0;
@@ -4175,6 +5055,7 @@ class MarbleRushApp {
             pod.mesh.material.emissiveIntensity = idx === 2 ? 3.2 : 0.08;
           });
           this.raceState = 'RACING';
+          this.replay.captureFrame(0, this.balls, this.kinematicHurdles, this.startGate);
           this.syncUiState();
           setTimeout(() => {
             if (this.raceState !== 'COUNTDOWN') {
@@ -4202,13 +5083,24 @@ class MarbleRushApp {
       return;
     }
 
-    const scaledDt = Math.min(dt, 0.05) * this.config.speedMultiplier;
+    const scaledDt = Math.min(dt, 0.085) * this.config.speedMultiplier;
     this.physicsAccumulator += scaledDt;
 
     let substeps = 0;
     while (this.physicsAccumulator >= FIXED_DT && substeps < MAX_SUBSTEPS_PER_FRAME) {
       this.physicsAccumulator -= FIXED_DT;
       substeps++;
+
+      // Capture previous rigid body transform right before the final substep for smooth sub-frame interpolation
+      if (this.physicsAccumulator < FIXED_DT) {
+        for (let i = 0; i < this.balls.length; i++) {
+          const b = this.balls[i];
+          const p = b.body.translation();
+          const q = b.body.rotation();
+          b.prevPos.set(p.x, p.y, p.z);
+          b.prevQuat.set(q.x, q.y, q.z, q.w);
+        }
+      }
 
       if (this.raceState === 'RACING') {
         this.raceElapsedTime += FIXED_DT;
@@ -4232,19 +5124,46 @@ class MarbleRushApp {
 
       if (this.raceState === 'RACING') {
         this.measureBallProgressAndFinishes(FIXED_DT);
+        this.replay.captureFrame(
+          this.raceElapsedTime,
+          this.balls,
+          this.kinematicHurdles,
+          this.startGate
+        );
       }
     }
 
-    this.syncBallsFromPhysics(true);
+    const interpAlpha = substeps > 0 ? THREE.MathUtils.clamp(this.physicsAccumulator / FIXED_DT, 0, 1) : 1;
+    this.syncBallsFromPhysics(true, interpAlpha);
   }
 
   addCamShake(ball, amount) {
     if (!ball) return;
     const isFollowed =
-      ((this.cameraMode === 'leader' || this.cameraMode === 'director') && ball.rank === 1) ||
-      (this.cameraMode === 'selected' && ball.id === this.selectedBallIndex);
+      this.raceState === 'REPLAY' ||
+      ((this.cameraMode === 'leader' || this.cameraMode === 'director') && ball.rank === 1);
     if (isFollowed) {
       this.camShake = Math.min(0.42, Math.max(this.camShake, amount));
+    }
+  }
+
+  triggerLiveDirectorMoment(type, ball) {
+    if (this.cameraMode !== 'director' || this.raceState !== 'RACING') return;
+    const nowSec = performance.now() * 0.001;
+    if (nowSec - this.directorState.cutAt < 2.4) return;
+    this.directorState.cutAt = nowSec;
+    this.directorState.liveEventType = type;
+    this.directorState.liveBallId = ball?.id ?? 0;
+
+    if (type === 'hurdle_hit') {
+      this.setDirectorShot('Hurdle Action');
+      this.directorState.hasFixedPos = false;
+    } else if (type === 'pack_clash') {
+      this.setDirectorShot('Reverse Pack');
+      this.directorState.hasFixedPos = false;
+    } else if (type === 'big_air' || type === 'lead_change') {
+      this.setDirectorShot('Bumper Duel');
+      this.directorState.hasFixedPos = false;
     }
   }
 
@@ -4264,14 +5183,33 @@ class MarbleRushApp {
       const v2 = b2.body.linvel();
       const relSpeed = Math.hypot(v1.x - v2.x, v1.y - v2.y, v1.z - v2.z);
       if (relSpeed > 1.1) {
-        this.sound.playMarbleClack(Math.min(1, relSpeed / 14));
+        const s = Math.min(1, relSpeed / 14);
+        this.sound.playMarbleClack(s);
+        if (this.raceState === 'RACING') {
+          this.replay.recordAudioCue(this.raceElapsedTime, 'clack', s);
+          if (relSpeed > 5.0) {
+            const topPackBonus = b1.rank <= 4 || b2.rank <= 4 ? 0.25 : 0;
+            const intensity = THREE.MathUtils.clamp(relSpeed / 13 + topPackBonus, 0.4, 1.3);
+            this._v4.lerpVectors(b1.worldPos, b2.worldPos, 0.5);
+            this.replay.recordEvent({
+              time: this.raceElapsedTime,
+              type: 'pack_clash',
+              label: topPackBonus > 0 ? 'Lead Battle Clash' : 'Pack Collision',
+              category: 'clash',
+              intensity,
+              primaryBallId: b1.rank <= b2.rank ? b1.id : b2.id,
+              secondaryBallId: b1.rank <= b2.rank ? b2.id : b1.id,
+              s: (b1.progressMeters + b2.progressMeters) * 0.5,
+              worldPos: this._v4,
+            });
+            if (intensity >= 0.86) {
+              this.triggerLiveDirectorMoment('pack_clash', b1.rank <= b2.rank ? b1 : b2);
+            }
+          }
+        }
         if (relSpeed > 7.0) {
           this.addCamShake(b1, 0.12);
           this.addCamShake(b2, 0.12);
-        }
-        if (this.particles && relSpeed > 6.5 && Math.random() < 0.45) {
-          this._v4.lerpVectors(b1.worldPos, b2.worldPos, 0.5);
-          this.particles.emitBurst(this._v4, 5, '#ffffff', 5.2, 0.34, 14, 0.72);
         }
       }
       return;
@@ -4295,40 +5233,104 @@ class MarbleRushApp {
     if (otherMeta.kind === 'booster') {
       if (this.raceElapsedTime - ball.lastBoostAt > 0.7) {
         ball.lastBoostAt = this.raceElapsedTime;
-        const boost = 7.8 * this.config.speedMultiplier;
+        const boost = 7.4 * this.config.speedMultiplier;
         ball.body.setLinvel(
           {
             x: lv.x + otherMeta.dir.x * boost,
-            y: lv.y + otherMeta.dir.y * boost + 0.5,
+            y: lv.y + otherMeta.dir.y * boost + 0.12,
             z: lv.z + otherMeta.dir.z * boost,
           },
           true
         );
         this.sound.playHurdleHit('booster', 0.95);
-        this.addCamShake(ball, 0.28);
-        if (this.particles) {
-          this.particles.emitBurst(ball.worldPos, 10, '#22d3ee', 7.2, 0.45, 10, 0.95);
+        if (this.raceState === 'RACING') {
+          this.replay.recordAudioCue(this.raceElapsedTime, 'hurdle', 0.95, 'booster');
+          this.replay.recordEvent({
+            time: this.raceElapsedTime,
+            type: 'booster',
+            label: `${ball.name} Turbo Surge`,
+            category: 'clash',
+            intensity: 0.76 + (ball.rank <= 3 ? 0.2 : 0),
+            primaryBallId: ball.id,
+            s: ball.progressMeters,
+            worldPos: ball.worldPos,
+          });
         }
+        this.addCamShake(ball, 0.28);
       }
     } else if (otherMeta.kind === 'hurdle') {
       if (speed > 0.75) {
-        this.sound.playHurdleHit(otherMeta.subType, Math.min(1, speed / 14));
-        this.addCamShake(ball, Math.min(0.24, speed * 0.015));
-        if (this.particles && speed > 4.0 && Math.random() < 0.7) {
-          this.particles.emitBurst(ball.worldPos, 6, '#fbbf24', 6.4, 0.4, 14, 0.88);
+        const s = Math.min(1, speed / 14);
+        this.sound.playHurdleHit(otherMeta.subType, s);
+        if (this.raceState === 'RACING') {
+          this.replay.recordAudioCue(this.raceElapsedTime, 'hurdle', s, otherMeta.subType);
+          if (speed > 4.2 || otherMeta.subType === 'jump_ramp') {
+            const labelMap = {
+              rotating_bar: 'Rotating Bar Strike',
+              moving_gate: 'Moving Gate Impact',
+              spinning_wheel: 'Spinning Wheel Hit',
+              moving_platform: 'Shuttle Deflection',
+              jump_ramp: 'Ramp Launch',
+              narrow_passage: 'Chicane Squeeze',
+              speed_bump: 'Rumble Crest',
+            };
+            const isAir = otherMeta.subType === 'jump_ramp';
+            const intensity =
+              THREE.MathUtils.clamp(speed / 13, 0.45, 1.15) +
+              (isAir ? 0.24 : 0) +
+              (ball.rank <= 3 ? 0.18 : 0);
+            this.replay.recordEvent({
+              time: this.raceElapsedTime,
+              type: isAir ? 'big_air' : 'hurdle_hit',
+              label: `${ball.name} ${labelMap[otherMeta.subType] || 'Obstacle Hit'}`,
+              category: isAir ? 'air' : 'clash',
+              intensity,
+              primaryBallId: ball.id,
+              s: ball.progressMeters,
+              worldPos: ball.worldPos,
+              subType: otherMeta.subType,
+            });
+            if (intensity >= 0.85) {
+              this.triggerLiveDirectorMoment(isAir ? 'big_air' : 'hurdle_hit', ball);
+            }
+          }
         }
+        this.addCamShake(ball, Math.min(0.24, speed * 0.015));
       }
     } else if (otherMeta.kind === 'wall') {
       if (speed > 1.8) {
-        this.sound.playWallHit(Math.min(1, speed / 18));
+        const s = Math.min(1, speed / 18);
+        this.sound.playWallHit(s);
+        if (this.raceState === 'RACING') {
+          this.replay.recordAudioCue(this.raceElapsedTime, 'wall', s);
+          if (speed > 10.5) {
+            this.replay.recordEvent({
+              time: this.raceElapsedTime,
+              type: 'wall_slam',
+              label: `${ball.name} Barrier Slam`,
+              category: 'clash',
+              intensity: THREE.MathUtils.clamp(speed / 16 + (ball.rank <= 3 ? 0.15 : 0), 0.55, 1.1),
+              primaryBallId: ball.id,
+              s: ball.progressMeters,
+              worldPos: ball.worldPos,
+            });
+          }
+        }
         if (speed > 8.0) this.addCamShake(ball, 0.1);
       }
     } else if (otherMeta.kind === 'track') {
       // Only play landing thud / whoosh if ball drops hard onto track surface
       if (Math.abs(lv.y) > 4.2) {
-        this.sound.playWallHit(Math.min(1, Math.abs(lv.y) / 14));
+        const s = Math.min(1, Math.abs(lv.y) / 14);
+        this.sound.playWallHit(s);
+        if (this.raceState === 'RACING') {
+          this.replay.recordAudioCue(this.raceElapsedTime, 'wall', s);
+        }
         if (Math.abs(lv.y) > 6.2) {
           this.sound.playWhoosh(0.65);
+          if (this.raceState === 'RACING') {
+            this.replay.recordAudioCue(this.raceElapsedTime, 'whoosh', 0.65);
+          }
           this.addCamShake(ball, 0.16);
         }
       }
@@ -4351,10 +5353,14 @@ class MarbleRushApp {
     }
   }
 
-  respawnBallAtCheckpoint(ball, reason) {
+  respawnBallAtCheckpoint(ball, reason, nearS = null) {
     const L = this.config.distanceMeters;
     const halfW = this.config.trackWidth * 0.5;
-    let targetS = THREE.MathUtils.clamp(ball.lastCheckpointS + 0.8, 1.0, Math.max(2.0, L - 3.0));
+    const fallbackS = Math.max(ball.lastCheckpointS + 0.8, 1.0);
+    let targetS =
+      nearS !== null
+        ? THREE.MathUtils.clamp(Math.max(ball.lastCheckpointS, nearS - 1.6), 0.8, Math.max(2.0, L - 3.5))
+        : THREE.MathUtils.clamp(fallbackS, 1.0, Math.max(2.0, L - 3.0));
 
     // Avoid dropping directly inside any hurdle
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -4386,6 +5392,8 @@ class MarbleRushApp {
     ball.body.wakeUp();
 
     ball.worldPos.copy(spawnPos);
+    ball.prevPos.copy(spawnPos);
+    ball.currPos.copy(spawnPos);
     ball.mesh.position.copy(spawnPos);
     ball.stationIdx = Math.max(
       0,
@@ -4401,16 +5409,14 @@ class MarbleRushApp {
     ball.currentSpeed = forwardSpeed;
 
     this.sound.playRespawn();
-    if (this.particles) {
-      this.particles.emitBurst(spawnPos, 10, '#38bdf8', 6.0, 0.55, 10, 1.05);
-    }
   }
 
   measureBallProgressAndFinishes(substepDt) {
     const { stations, sStart, ds, bounds, checkpoints } = this.trackData;
     const finishS = this.config.distanceMeters;
     const halfW = this.config.trackWidth * 0.5;
-    const canRescue = this.raceElapsedTime > 1.6 && (!this.startGate || this.startGate.openProgress >= 0.85);
+    const canRescueStuck =
+      this.raceElapsedTime > 1.6 && (!this.startGate || this.startGate.openProgress >= 0.85);
 
     for (const ball of this.balls) {
       const p = ball.body.translation();
@@ -4458,6 +5464,31 @@ class MarbleRushApp {
       ball.prevProgressMeters = ball.progressMeters;
       ball.progressMeters = Math.max(0, exactS);
 
+      // Record dramatic mid-air jumps for Replay Director
+      if (vertOffset > 1.15 && ball.currentSpeed > 6.5 && exactS > 4 && exactS < finishS - 2) {
+        this.replay.recordEvent({
+          time: this.raceElapsedTime,
+          type: 'big_air',
+          label: `${ball.name} Big Air Flight`,
+          category: 'air',
+          intensity: THREE.MathUtils.clamp(0.72 + vertOffset * 0.2 + (ball.rank <= 3 ? 0.18 : 0), 0.72, 1.35),
+          primaryBallId: ball.id,
+          s: exactS,
+          worldPos: ball.worldPos,
+        });
+      }
+
+      // Immediate strict out-of-track containment recovery (zero roaming outside walls)
+      const outsideTrack =
+        vertOffset < -0.45 ||
+        Math.abs(latOffset) > halfW + 0.18 ||
+        p.y < bounds.minY - 1.4;
+
+      if (outsideTrack) {
+        this.respawnBallAtCheckpoint(ball, 'fell', Math.max(1.0, exactS));
+        continue;
+      }
+
       // Update latest passed checkpoint + flash visual beacons on leader crossing
       for (const cpS of checkpoints) {
         if (ball.progressMeters >= cpS && cpS > ball.lastCheckpointS) {
@@ -4468,39 +5499,22 @@ class MarbleRushApp {
         for (const cpVis of this.checkpointVisuals) {
           if (!cpVis.triggered && ball.progressMeters >= cpVis.s) {
             cpVis.triggered = true;
-            cpVis.beaconMat.color.setHex(0x10b981);
-            cpVis.beaconMat.emissive.setHex(0x10b981);
-            cpVis.beaconMat.emissiveIntensity = 3.2;
-            cpVis.stripMat.color.setHex(0x10b981);
-            cpVis.stripMat.emissive.setHex(0x10b981);
-            cpVis.stripMat.emissiveIntensity = 1.8;
+            cpVis.beaconMat.color.setHex(0x2e9e66);
+            cpVis.stripMat.color.setHex(0x2e9e66);
             this.sound.playCheckpointChime();
-            if (this.particles) {
-              this.particles.emitBurst(cpVis.pos, 12, '#34d399', 6.5, 0.55, 10, 1.0);
-            }
           }
         }
       }
 
-      // Check fell-off-track or stuck behind obstacle; respawn near checkpoint
-      if (!ball.finished && canRescue) {
-        const fellOut =
-          vertOffset < -1.35 ||
-          Math.abs(latOffset) > halfW + 1.45 ||
-          p.y < bounds.minY - 2.2;
-
-        if (fellOut) {
-          this.respawnBallAtCheckpoint(ball, 'fell');
-          continue;
-        }
-
+      // Check stuck behind obstacle; respawn near checkpoint
+      if (!ball.finished && canRescueStuck) {
         const lv = ball.body.linvel();
         const speed = Math.hypot(lv.x, lv.y, lv.z);
         const forwardDelta = ball.progressMeters - ball.prevProgressMeters;
         if (speed < 0.9 || forwardDelta < substepDt * 0.22) {
           ball.stuckTimer += substepDt;
           if (ball.stuckTimer >= 2.25) {
-            this.respawnBallAtCheckpoint(ball, 'stuck');
+            this.respawnBallAtCheckpoint(ball, 'stuck', Math.max(1.0, exactS));
             continue;
           }
         } else {
@@ -4528,19 +5542,22 @@ class MarbleRushApp {
         if (ball.finishRank === 1 && !this.winnerAnnounced) {
           this.winnerAnnounced = true;
           this.sound.playWin();
+          this.replay.recordAudioCue(this.raceElapsedTime, 'win', 1.0);
+          this.replay.recordEvent({
+            time: this.raceElapsedTime,
+            type: 'finish',
+            label: `${ball.name} Wins Photo Finish`,
+            category: 'finish',
+            intensity: 1.55,
+            primaryBallId: ball.id,
+            s: finishS,
+            worldPos: ball.worldPos,
+          });
           this.showWinnerToast(ball);
           this.dom.btnViewResults.classList.remove('hidden');
-
-          if (this.particles) {
-            const fSt = getStationAtS(this.trackData, finishS);
-            const burstOrigin = fSt.pos.clone().addScaledVector(fSt.U, 3.6);
-            this.particles.emitBurst(burstOrigin, 44, ball.color, 11.5, 1.6, 6.2, 1.55);
-            this.particles.emitBurst(burstOrigin, 36, '#fbbf24', 10.5, 1.65, 6.2, 1.45);
+          if (this.dom.btnCinematicReplay) {
+            this.dom.btnCinematicReplay.classList.remove('hidden');
           }
-        } else if (ball.finishRank <= 3 && this.particles) {
-          const fSt = getStationAtS(this.trackData, finishS);
-          const burstOrigin = fSt.pos.clone().addScaledVector(fSt.U, 3.2);
-          this.particles.emitBurst(burstOrigin, 22, ball.color, 9.0, 1.2, 6.8, 1.25);
         }
       }
     }
@@ -4555,8 +5572,41 @@ class MarbleRushApp {
       sorted[r].rank = r + 1;
     }
 
+    // Track real overtakes / lead changes for Cinematic Replay Highlights
+    if (sorted.length > 0 && !sorted[0].finished) {
+      const newLeader = sorted[0];
+      if (
+        newLeader.id !== this.lastLeaderId &&
+        newLeader.progressMeters > 4.5 &&
+        this.raceElapsedTime > 1.2
+      ) {
+        const oldLeaderId = this.lastLeaderId;
+        this.lastLeaderId = newLeader.id;
+        this.replay.recordEvent({
+          time: this.raceElapsedTime,
+          type: 'lead_change',
+          label: `${newLeader.name} Takes the Lead!`,
+          category: 'overtake',
+          intensity: 1.28,
+          primaryBallId: newLeader.id,
+          secondaryBallId: oldLeaderId,
+          s: newLeader.progressMeters,
+          worldPos: newLeader.worldPos,
+        });
+        this.triggerLiveDirectorMoment('lead_change', newLeader);
+      } else {
+        this.lastLeaderId = newLeader.id;
+      }
+    }
+
     if (this.finishedCount >= this.balls.length && this.raceState === 'RACING') {
       this.raceState = 'FINISHED';
+      this.replay.captureFrame(
+        this.raceElapsedTime,
+        this.balls,
+        this.kinematicHurdles,
+        this.startGate
+      );
       this.syncUiState();
       this.finalizeRecordingAndOpenResults();
     }
@@ -4572,8 +5622,9 @@ class MarbleRushApp {
     }
   }
 
-  syncBallsFromPhysics(allowEffects) {
+  syncBallsFromPhysics(allowEffects, interpAlpha = 1) {
     let trackedSpeed = 0;
+    const useInterp = allowEffects && interpAlpha < 0.999 && this.raceState === 'RACING';
     for (let i = 0; i < this.balls.length; i++) {
       const ball = this.balls[i];
       const t = ball.body.translation();
@@ -4590,33 +5641,36 @@ class MarbleRushApp {
       if (ball.currentSpeed > ball.peakSpeed) {
         ball.peakSpeed = ball.currentSpeed;
       }
-      if (
-        (this.cameraMode === 'selected' && ball.id === this.selectedBallIndex) ||
-        (this.cameraMode !== 'selected' && ball.rank === 1)
-      ) {
+      if (ball.rank === 1) {
         trackedSpeed = ball.currentSpeed;
       }
 
-      ball.worldPos.set(t.x, t.y, t.z);
-      ball.mesh.position.set(t.x, t.y, t.z);
-      ball.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+      ball.currPos.set(t.x, t.y, t.z);
+      ball.currQuat.set(r.x, r.y, r.z, r.w);
+      if (useInterp && ball.prevPos.distanceToSquared(ball.currPos) < 4.0) {
+        ball.mesh.position.lerpVectors(ball.prevPos, ball.currPos, interpAlpha);
+        ball.mesh.quaternion.slerpQuaternions(ball.prevQuat, ball.currQuat, interpAlpha);
+      } else {
+        ball.mesh.position.copy(ball.currPos);
+        ball.mesh.quaternion.copy(ball.currQuat);
+      }
+      ball.worldPos.copy(ball.mesh.position);
 
       // Ground contact shadow directly beneath marble
       if (this.contactShadowMesh && i < 50) {
         const st = this.trackData?.stations?.[ball.stationIdx];
-        const trackY = st ? st.pos.y + 0.028 : t.y - BALL_RADIUS + 0.03;
-        const clearance = Math.max(0, t.y - BALL_RADIUS - trackY);
+        const trackY = st ? st.pos.y + 0.028 : ball.mesh.position.y - BALL_RADIUS + 0.03;
+        const clearance = Math.max(0, ball.mesh.position.y - BALL_RADIUS - trackY);
         const shadowScale = Math.max(0.25, 1.0 - clearance * 0.16);
-        this._dummy.position.set(t.x, Math.min(t.y - BALL_RADIUS + 0.035, trackY), t.z);
+        this._dummy.position.set(
+          ball.mesh.position.x,
+          Math.min(ball.mesh.position.y - BALL_RADIUS + 0.035, trackY),
+          ball.mesh.position.z
+        );
         this._dummy.rotation.set(0, 0, 0);
         this._dummy.scale.set(shadowScale, 1, shadowScale);
         this._dummy.updateMatrix();
         this.contactShadowMesh.setMatrixAt(i, this._dummy.matrix);
-      }
-
-      // Subtle spark puff on extreme sudden velocity drop
-      if (allowEffects && Math.abs(ball.prevSpeed - speed) > 7.5 && this.particles && Math.random() < 0.4) {
-        this.particles.emitBurst(ball.worldPos, 4, ball.color, 5.5, 0.38, 14, 0.75);
       }
     }
 
@@ -4632,22 +5686,358 @@ class MarbleRushApp {
     }
 
     this.sound.updateRollingBed(trackedSpeed, this.raceState === 'RACING' && allowEffects);
+  }
 
-    const selBall = this.balls[this.selectedBallIndex];
-    if (selBall && (this.cameraMode === 'selected' || this.raceState === 'RACING')) {
-      this.selectionHalo.visible = true;
-      this.selectionHalo.position.set(
-        selBall.worldPos.x,
-        selBall.worldPos.y - BALL_RADIUS + 0.06,
-        selBall.worldPos.z
+  // ==========================================================================
+  // Cinematic Replay Playback & Intense-Moment Timeline Control
+  // ==========================================================================
+  formatReplayShortTime(seconds) {
+    const clamped = Math.max(0, seconds || 0);
+    const mins = Math.floor(clamped / 60);
+    const secs = Math.floor(clamped % 60);
+    const tenths = Math.floor((clamped % 1) * 10);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`;
+  }
+
+  enterReplayMode(startAtTime = 0) {
+    if (!this.replay.hasData()) return;
+    this.sound.ensureContext();
+    this.sound.updateRollingBed(0, false);
+
+    if (this.dom.replayVideoPlayer) {
+      this.dom.replayVideoPlayer.pause();
+    }
+    this.dom.resultsModal.classList.add('hidden');
+    this.dom.countdownOverlay.classList.add('hidden');
+    this.dom.winnerToast.classList.add('hidden');
+
+    if (this.raceState !== 'REPLAY') {
+      this.preReplayCameraMode = this.cameraMode;
+    }
+
+    this.replay.compileDirectorSheet(this.raceElapsedTime, this.balls);
+    this.replay.isPlaying = true;
+    this.replay.activeShotIdx = -1;
+    this.raceState = 'REPLAY';
+
+    // Give full uncluttered screen to the cinematic replay
+    this.setConfigDrawerOpen(false);
+    this.renderReplayMarkers();
+    this.seekReplay(startAtTime);
+    this.syncUiState();
+  }
+
+  exitReplayMode(openResults = false) {
+    if (this.raceState !== 'REPLAY') return;
+    this.sound.updateRollingBed(0, false);
+    this.raceState = this.winnerAnnounced || this.finishedCount > 0 ? 'FINISHED' : 'READY';
+    this.cameraMode = this.preReplayCameraMode || 'overview';
+    this.replay.isPlaying = false;
+    this.replay.activeShotIdx = -1;
+    this.camShake = 0;
+    this.camBankRoll = 0;
+    this.directorState.justCut = true;
+
+    if (this.trails) this.trails.reset();
+    if (this.replay.hasData()) {
+      this.applyReplayFrameAtTime(this.replay.totalDuration);
+    }
+
+    this.syncUiState();
+    this.updateTelemetryHud();
+    this.updateLeaderboard(false);
+
+    if (openResults && this.winnerAnnounced) {
+      this.openResultsModal();
+    }
+  }
+
+  renderReplayMarkers() {
+    if (!this.dom.replayMarkers) return;
+    this.dom.replayMarkers.innerHTML = '';
+    const dur = Math.max(0.5, this.replay.totalDuration);
+    for (const hl of this.replay.highlights) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `replay-marker type-${hl.category || 'clash'}`;
+      const pct = THREE.MathUtils.clamp((hl.time / dur) * 100, 1, 99);
+      btn.style.left = `${pct}%`;
+      btn.title = `${hl.label} (${this.formatReplayShortTime(hl.time)})`;
+      btn.setAttribute('aria-label', `${hl.label} at ${this.formatReplayShortTime(hl.time)}`);
+      btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.replay.isPlaying = true;
+        this.seekReplay(Math.max(0, hl.time - 0.65));
+        this.syncUiState();
+      });
+      this.dom.replayMarkers.appendChild(btn);
+    }
+  }
+
+  playReplayAudioCue(cue) {
+    if (!this.sound.enabled) return;
+    if (cue.kind === 'clack') this.sound.playMarbleClack(cue.intensity);
+    else if (cue.kind === 'hurdle') this.sound.playHurdleHit(cue.subType || 'rotating_bar', cue.intensity);
+    else if (cue.kind === 'wall') this.sound.playWallHit(cue.intensity);
+    else if (cue.kind === 'whoosh') this.sound.playWhoosh(cue.intensity);
+    else if (cue.kind === 'win') this.sound.playWin();
+  }
+
+  stepReplaySimulation(dt) {
+    if (!this.replay.hasData()) return;
+    const t = this.replay.currentTime;
+    const shotIdx = this.replay.getShotIndexAt(t);
+    const shot = this.replay.shots[shotIdx];
+    const inSlowMo = Boolean(
+      this.replay.autoSlowMo &&
+        shot &&
+        shot.slowMoStart >= 0 &&
+        t >= shot.slowMoStart &&
+        t <= shot.slowMoEnd
+    );
+
+    if (!this.replay.isPlaying) {
+      this.applyReplayFrameAtTime(t);
+      this.sound.updateRollingBed(0, false);
+      this.updateReplayHud(inSlowMo);
+      return;
+    }
+
+    const slowFactor = inSlowMo ? 0.36 : 1.0;
+    const prevT = t;
+    let nextT = prevT + dt * this.replay.playbackSpeed * slowFactor;
+    if (nextT >= this.replay.totalDuration) {
+      nextT = this.replay.totalDuration;
+      this.replay.isPlaying = false;
+      this.syncUiState();
+    }
+
+    // Trigger captured Web Audio SFX synchronized with replay timeline
+    let cuesPlayed = 0;
+    for (let i = 0; i < this.replay.audioCues.length; i++) {
+      const cue = this.replay.audioCues[i];
+      if (cue.time > this.replay.prevTimeForAudio && cue.time <= nextT) {
+        this.playReplayAudioCue(cue);
+        cuesPlayed++;
+        if (cuesPlayed >= 3) break;
+      }
+    }
+    this.replay.prevTimeForAudio = nextT;
+    this.replay.currentTime = nextT;
+
+    this.applyReplayFrameAtTime(nextT);
+    this.updateReplayHud(inSlowMo);
+  }
+
+  applyReplayFrameAtTime(t) {
+    const frames = this.replay.frames;
+    if (frames.length === 0 || this.balls.length === 0) return;
+
+    const clampedT = THREE.MathUtils.clamp(t, 0, this.replay.totalDuration);
+    const idx0 = this.replay.findFrameIndex(clampedT);
+    const idx1 = Math.min(frames.length - 1, idx0 + 1);
+    const f0 = frames[idx0];
+    const f1 = frames[idx1];
+    const span = f1.t - f0.t;
+    const alpha = span > 1e-5 ? THREE.MathUtils.clamp((clampedT - f0.t) / span, 0, 1) : 0;
+
+    const n = Math.min(this.balls.length, this.replay.ballCount);
+    const stations = this.trackData?.stations;
+    const sStart = this.trackData?.sStart ?? 0;
+    const ds = this.trackData?.ds ?? 0.5;
+    let leaderSpeed = 0;
+
+    for (let i = 0; i < n; i++) {
+      const ball = this.balls[i];
+      const off = i * 8;
+      this._v1.set(f0.ballData[off], f0.ballData[off + 1], f0.ballData[off + 2]);
+      this._v2.set(f1.ballData[off], f1.ballData[off + 1], f1.ballData[off + 2]);
+
+      if (this._v1.distanceToSquared(this._v2) < 9.0) {
+        ball.currPos.lerpVectors(this._v1, this._v2, alpha);
+      } else {
+        ball.currPos.copy(alpha < 0.5 ? this._v1 : this._v2);
+      }
+
+      this._q1.set(
+        f0.ballData[off + 3],
+        f0.ballData[off + 4],
+        f0.ballData[off + 5],
+        f0.ballData[off + 6]
       );
+      this._q2.set(
+        f1.ballData[off + 3],
+        f1.ballData[off + 4],
+        f1.ballData[off + 5],
+        f1.ballData[off + 6]
+      );
+      ball.currQuat.slerpQuaternions(this._q1, this._q2, alpha);
+
+      ball.mesh.position.copy(ball.currPos);
+      ball.mesh.quaternion.copy(ball.currQuat);
+      ball.worldPos.copy(ball.currPos);
+      ball.prevPos.copy(ball.currPos);
+      ball.prevQuat.copy(ball.currQuat);
+
+      ball.currentSpeed = THREE.MathUtils.lerp(f0.ballData[off + 7], f1.ballData[off + 7], alpha);
+      ball.progressMeters = THREE.MathUtils.lerp(f0.ballProgress[i], f1.ballProgress[i], alpha);
+      ball.rank = f0.ballRanks[i] || ball.rank;
+      if (ball.rank === 1) leaderSpeed = ball.currentSpeed;
+
+      if (stations && stations.length > 0) {
+        const approxIdx = Math.round((ball.progressMeters - sStart) / ds);
+        ball.stationIdx = THREE.MathUtils.clamp(approxIdx, 0, stations.length - 1);
+      }
+
+      if (this.contactShadowMesh && i < 50) {
+        const st = stations?.[ball.stationIdx];
+        const trackY = st ? st.pos.y + 0.028 : ball.mesh.position.y - BALL_RADIUS + 0.03;
+        const clearance = Math.max(0, ball.mesh.position.y - BALL_RADIUS - trackY);
+        const shadowScale = Math.max(0.25, 1.0 - clearance * 0.16);
+        this._dummy.position.set(
+          ball.mesh.position.x,
+          Math.min(ball.mesh.position.y - BALL_RADIUS + 0.035, trackY),
+          ball.mesh.position.z
+        );
+        this._dummy.rotation.set(0, 0, 0);
+        this._dummy.scale.set(shadowScale, 1, shadowScale);
+        this._dummy.updateMatrix();
+        this.contactShadowMesh.setMatrixAt(i, this._dummy.matrix);
+      }
+    }
+
+    if (this.contactShadowMesh) {
+      this.contactShadowMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Interpolate kinematic hurdles cleanly
+    const nh = Math.min(this.kinematicHurdles.length, this.replay.hurdleCount);
+    if (f0.hurdleData.length >= nh * 7 && f1.hurdleData.length >= nh * 7) {
+      for (let i = 0; i < nh; i++) {
+        const h = this.kinematicHurdles[i];
+        const off = i * 7;
+        this._v1.set(f0.hurdleData[off], f0.hurdleData[off + 1], f0.hurdleData[off + 2]);
+        this._v2.set(f1.hurdleData[off], f1.hurdleData[off + 1], f1.hurdleData[off + 2]);
+        h.mesh.position.lerpVectors(this._v1, this._v2, alpha);
+
+        this._q1.set(
+          f0.hurdleData[off + 3],
+          f0.hurdleData[off + 4],
+          f0.hurdleData[off + 5],
+          f0.hurdleData[off + 6]
+        );
+        this._q2.set(
+          f1.hurdleData[off + 3],
+          f1.hurdleData[off + 4],
+          f1.hurdleData[off + 5],
+          f1.hurdleData[off + 6]
+        );
+        h.mesh.quaternion.slerpQuaternions(this._q1, this._q2, alpha);
+      }
+    }
+
+    // Start gate position during replay
+    if (this.startGate) {
+      const gp = THREE.MathUtils.lerp(f0.gateProgress, f1.gateProgress, alpha);
+      const eased = 1 - Math.pow(1 - gp, 3);
+      this.startGate.mesh.position.lerpVectors(this.startGate.closedPos, this.startGate.openPos, eased);
+    }
+
+    // Winner podium trophies appear at the exact moment each podium marble finishes
+    for (const slot of this.podiumSlots) {
+      const finisher = this.balls.find((b) => b.finishRank === slot.rank);
+      if (finisher && finisher.finishTime !== null && finisher.finishTime <= clampedT + 0.05) {
+        slot.mesh.material.color.set(finisher.color);
+        slot.mesh.visible = true;
+      } else {
+        slot.mesh.visible = false;
+      }
+    }
+
+    this.sound.updateRollingBed(leaderSpeed, this.replay.isPlaying);
+  }
+
+  seekReplay(targetTime) {
+    if (!this.replay.hasData()) return;
+    const clamped = THREE.MathUtils.clamp(targetTime, 0, this.replay.totalDuration);
+    this.replay.currentTime = clamped;
+    this.replay.prevTimeForAudio = clamped;
+    this.replay.activeShotIdx = -1;
+    this.directorState.justCut = true;
+    if (this.trails) this.trails.reset();
+    this.applyReplayFrameAtTime(clamped);
+    this.updateReplayHud(false);
+    this.updateTelemetryHud();
+    this.updateLeaderboard(false);
+  }
+
+  jumpToReplayHighlight(dir) {
+    const hls = this.replay.highlights;
+    if (!hls || hls.length === 0) {
+      this.seekReplay(dir < 0 ? 0 : this.replay.totalDuration);
+      return;
+    }
+    const cur = this.replay.currentTime;
+    let target = null;
+    if (dir > 0) {
+      target = hls.find((h) => h.time > cur + 0.85) || hls[0];
     } else {
-      this.selectionHalo.visible = false;
+      for (let i = hls.length - 1; i >= 0; i--) {
+        if (hls[i].time < cur - 0.85) {
+          target = hls[i];
+          break;
+        }
+      }
+      if (!target) target = hls[hls.length - 1];
+    }
+    this.replay.isPlaying = true;
+    this.seekReplay(Math.max(0, target.time - 0.65));
+    this.syncUiState();
+  }
+
+  updateReplayHud(inSlowMo = false) {
+    const dur = Math.max(0.01, this.replay.totalDuration);
+    const cur = THREE.MathUtils.clamp(this.replay.currentTime, 0, dur);
+    const pct = (cur / dur) * 100;
+
+    if (this.dom.replayProgressFill) {
+      this.dom.replayProgressFill.style.width = `${pct.toFixed(2)}%`;
+    }
+    if (this.dom.replayScrubberThumb) {
+      this.dom.replayScrubberThumb.style.left = `${pct.toFixed(2)}%`;
+    }
+    if (this.dom.replayScrubberWrap) {
+      this.dom.replayScrubberWrap.setAttribute('aria-valuenow', String(Math.round(pct)));
+    }
+    if (this.dom.replayTimeReadout) {
+      this.dom.replayTimeReadout.textContent = `${this.formatReplayShortTime(cur)} / ${this.formatReplayShortTime(dur)}`;
+    }
+    if (this.dom.btnReplayPlay) {
+      this.dom.btnReplayPlay.textContent = this.replay.isPlaying ? 'Pause' : cur >= dur - 0.05 ? 'Replay' : 'Play';
+      this.dom.btnReplayPlay.classList.toggle('active', this.replay.isPlaying);
+    }
+
+    const shotIdx = this.replay.getShotIndexAt(cur);
+    const shot = this.replay.shots[shotIdx];
+    const shotLabel = !this.replay.autoDirector
+      ? 'Manual Orbit'
+      : shot
+        ? shot.shotLabel
+        : 'Auto Director';
+    if (this.dom.replayShotBadge) {
+      this.dom.replayShotBadge.textContent = inSlowMo ? `0.36x · ${shotLabel}` : shotLabel;
+    }
+    if (this.dom.hudReplayMomentText) {
+      const momentText = shot ? shot.momentLabel : 'Highlight Reel';
+      this.dom.hudReplayMomentText.textContent = inSlowMo
+        ? `SLOW-MO · ${momentText}`
+        : `${shotLabel} · ${momentText}`;
     }
   }
 
   // ==========================================================================
-  // Camera Choreography (All 6 Modes: Overview, Leader, Ball, Full Top-Down, Finish, Easy Free)
+  // Camera Choreography (Overview, Broadcast, Leader, Full Top-Down, Finish, Free Roam)
   // ==========================================================================
   snapOverviewCamera() {
     if (!this.trackData) return;
@@ -4794,26 +6184,33 @@ class MarbleRushApp {
   updateCamera(dt) {
     if (!this.trackData || this.balls.length === 0) return;
 
-    const mapCfg = ENVIRONMENT_MAPS[this.config.mapPreset] || ENVIRONMENT_MAPS.alpine;
-    const targetFog = this.cameraMode === 'topdown' ? 0.00028 : mapCfg.fogDensity;
+    const mapCfg = TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition;
+    const targetFog = this.cameraMode === 'topdown' ? 0.00024 : mapCfg.fogDensity;
     if (this.scene.fog) {
       this.scene.fog.density = THREE.MathUtils.damp(this.scene.fog.density, targetFog, 6, dt);
     }
 
-    if (this.cameraMode === 'free') {
+    if (this.raceState === 'REPLAY' && !this.replay.autoDirector) {
       this.controls.enabled = true;
       this.camera.up.set(0, 1, 0);
       this.updateFreeCameraMovement(dt);
       this.controls.update();
       if (this.skyDome) this.skyDome.position.copy(this.camera.position);
-      this.atmosphere?.update(dt, this.controls.target);
+      return;
+    }
+
+    if (this.cameraMode === 'free' && this.raceState !== 'REPLAY') {
+      this.controls.enabled = true;
+      this.camera.up.set(0, 1, 0);
+      this.updateFreeCameraMovement(dt);
+      this.controls.update();
+      if (this.skyDome) this.skyDome.position.copy(this.camera.position);
       return;
     }
     this.controls.enabled = false;
 
     const sorted = [...this.balls].sort((a, b) => a.rank - b.rank);
     const leader = sorted[0];
-    const selected = this.balls[this.selectedBallIndex] || leader;
     const L = this.config.distanceMeters;
     const halfW = this.config.trackWidth * 0.5;
 
@@ -4832,7 +6229,130 @@ class MarbleRushApp {
     let targetBank = 0;
     let speedNorm = THREE.MathUtils.clamp(leader.currentSpeed / 24, 0, 1);
 
-    if (this.cameraMode === 'overview') {
+    if (this.raceState === 'REPLAY' && this.replay.autoDirector && this.replay.shots.length > 0) {
+      const rTime = this.replay.currentTime;
+      const shotIdx = this.replay.getShotIndexAt(rTime);
+      const shot = this.replay.shots[shotIdx];
+      if (shotIdx !== this.replay.activeShotIdx) {
+        this.replay.activeShotIdx = shotIdx;
+        this.directorState.justCut = true;
+        this.sound.playCameraCut();
+        if (shot && shot.intensity >= 0.92 && this.replay.isPlaying) {
+          this.camShake = Math.max(this.camShake, 0.16);
+        }
+      }
+
+      const primary = (shot && this.balls[shot.primaryBallId]) || leader;
+      const secondary =
+        shot && shot.secondaryBallId >= 0 ? this.balls[shot.secondaryBallId] || null : null;
+      const focusS = THREE.MathUtils.clamp(primary.progressMeters, 0, L + 10);
+      const st = getStationAtS(this.trackData, focusS);
+      const stAhead = getStationAtS(this.trackData, THREE.MathUtils.clamp(focusS + 4.0, 0, L + 10));
+      const shotElapsed = Math.max(0, rTime - (shot ? shot.startTime : 0));
+      const rightSign = shotIdx % 2 === 0 ? 1 : -1;
+
+      // Anchor onto battle midpoint when two contenders collide/duel closely
+      if (secondary && primary.worldPos.distanceToSquared(secondary.worldPos) < 120) {
+        this._v4.lerpVectors(primary.worldPos, secondary.worldPos, 0.5);
+      } else {
+        this._v4.copy(primary.worldPos);
+      }
+
+      const angleType = shot ? shot.angleType : 'apex_chase';
+      if (angleType === 'launch_sweep') {
+        const startSt = getStationAtS(this.trackData, 0);
+        const sweep = Math.sin(rTime * 0.9) * (halfW * 0.75);
+        this._v3.copy(this._v2).addScaledVector(startSt.T, 1.5);
+        this._v1
+          .copy(startSt.pos)
+          .addScaledVector(startSt.T, 9.5 + shotElapsed * 1.4)
+          .addScaledVector(startSt.U, 3.9)
+          .addScaledVector(startSt.R, sweep);
+        targetFov = 49;
+        dampFactor = 8.5;
+      } else if (angleType === 'impact_close') {
+        const lookAhead = Math.min(L + 8, focusS + 4.4);
+        const camSt = getStationAtS(this.trackData, lookAhead);
+        this._v3.copy(this._v4).addScaledVector(st.U, 0.25);
+        this._v1
+          .copy(camSt.pos)
+          .addScaledVector(camSt.U, 2.35)
+          .addScaledVector(camSt.R, rightSign * (halfW + 1.8));
+        targetFov = 46;
+        dampFactor = 13.5;
+      } else if (angleType === 'hurdle_hero') {
+        const hCamSt = getStationAtS(this.trackData, Math.min(L + 8, focusS + 5.2));
+        this._v3.copy(primary.worldPos).addScaledVector(st.T, 0.9);
+        this._v1
+          .copy(hCamSt.pos)
+          .addScaledVector(hCamSt.U, 2.05)
+          .addScaledVector(hCamSt.R, rightSign * (halfW * 0.85));
+        targetFov = 54;
+        dampFactor = 12.0;
+      } else if (angleType === 'jump_profile') {
+        this._v3.copy(primary.worldPos).addScaledVector(st.T, 2.8);
+        this._v1
+          .copy(primary.worldPos)
+          .addScaledVector(st.T, 0.8)
+          .addScaledVector(st.U, 1.8)
+          .addScaledVector(st.R, rightSign * (halfW + 4.2));
+        targetFov = 52;
+        dampFactor = 9.0;
+      } else if (angleType === 'bumper_duel') {
+        const info = this.computeFollowShot(primary, 1, st, rightSign);
+        this._v3.copy(this._v4).addScaledVector(st.T, 6.2).addScaledVector(st.U, 0.3);
+        targetFov = info.fov;
+        dampFactor = 9.5;
+        targetBank = THREE.MathUtils.clamp(
+          this._v4.subVectors(stAhead.T, st.T).dot(st.R) * -0.48,
+          -0.14,
+          0.14
+        );
+      } else if (angleType === 'reverse_pack') {
+        const info = this.computeFollowShot(primary, 3, st, rightSign);
+        targetFov = info.fov;
+        dampFactor = 9.0;
+      } else if (angleType === 'helicopter_orbit') {
+        const angle = shotElapsed * 0.75 * rightSign;
+        const rad = 11.5;
+        this._v3.copy(this._v2).addScaledVector(st.T, 2.5);
+        this._v1
+          .copy(this._v2)
+          .addScaledVector(st.T, -Math.cos(angle) * rad)
+          .addScaledVector(st.U, 8.8)
+          .addScaledVector(st.R, Math.sin(angle) * rad);
+        targetFov = 51;
+        dampFactor = 6.5;
+      } else if (angleType === 'side_drone') {
+        this._v3.copy(this._v4).addScaledVector(st.T, 3.6);
+        this._v1
+          .copy(this._v4)
+          .addScaledVector(st.T, 1.4 - shotElapsed * 0.6)
+          .addScaledVector(st.U, 2.7)
+          .addScaledVector(st.R, rightSign * (halfW + 3.1));
+        targetFov = 50;
+        dampFactor = 9.0;
+      } else if (angleType === 'finish_hero') {
+        const finSt = getStationAtS(this.trackData, L + 9.2);
+        this._v3.copy(leader.worldPos).lerp(finSt.pos, 0.28);
+        this._v1
+          .copy(finSt.pos)
+          .addScaledVector(finSt.U, 4.1)
+          .addScaledVector(finSt.R, -(halfW + 2.4));
+        targetFov = 48;
+        dampFactor = 9.5;
+      } else {
+        // apex_chase
+        const info = this.computeFollowShot(primary, 0, st, rightSign);
+        targetFov = info.fov;
+        dampFactor = 8.5;
+        targetBank = THREE.MathUtils.clamp(
+          this._v4.subVectors(stAhead.T, st.T).dot(st.R) * -0.45,
+          -0.13,
+          0.13
+        );
+      }
+    } else if (this.cameraMode === 'overview') {
       if (this.raceState === 'READY' || this.raceState === 'COUNTDOWN') {
         const startSt = getStationAtS(this.trackData, 0);
         const lookSt = getStationAtS(this.trackData, Math.min(28, L * 0.35));
@@ -4867,7 +6387,7 @@ class MarbleRushApp {
       // Automatic Broadcast TV Director Choreography
       const nowSec = performance.now() * 0.001;
       if (this.raceState === 'READY' || this.raceState === 'COUNTDOWN') {
-        this.setDirectorShot('Hero Dolly');
+        this.setDirectorShot('Wide Dolly');
         const startSt = getStationAtS(this.trackData, 0);
         const tSweep = Math.sin(nowSec * 0.65) * 5.2;
         this._v3.copy(startSt.pos).addScaledVector(startSt.T, -1.2).addScaledVector(startSt.U, 1.2);
@@ -5001,25 +6521,6 @@ class MarbleRushApp {
           0.14
         );
       }
-    } else if (this.cameraMode === 'selected') {
-      speedNorm = THREE.MathUtils.clamp(selected.currentSpeed / 24, 0, 1);
-      const st = getStationAtS(
-        this.trackData,
-        THREE.MathUtils.clamp(selected.progressMeters, 0, L + 8)
-      );
-      const stAhead = getStationAtS(
-        this.trackData,
-        THREE.MathUtils.clamp(selected.progressMeters + 3.8, 0, L + 8)
-      );
-      const info = this.computeFollowShot(selected, this.followShotAngle, st, -1);
-      targetFov = info.fov;
-      if (info.bankEnabled) {
-        targetBank = THREE.MathUtils.clamp(
-          this._v4.subVectors(stAhead.T, st.T).dot(st.R) * -0.48,
-          -0.14,
-          0.14
-        );
-      }
     } else if (this.cameraMode === 'topdown') {
       const { bounds } = this.trackData;
       const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
@@ -5102,24 +6603,9 @@ class MarbleRushApp {
       this.camera.updateProjectionMatrix();
     }
 
-    // Speed-reactive lens chromatic dispersion
-    if (this.lensPass) {
-      const caBase =
-        this.cameraMode === 'leader' || this.cameraMode === 'selected' || this.cameraMode === 'director'
-          ? 0.0008 + speedNorm * 0.0026
-          : 0.0005;
-      this.lensPass.uniforms.uAberration.value = THREE.MathUtils.damp(
-        this.lensPass.uniforms.uAberration.value,
-        caBase,
-        6,
-        dt
-      );
-    }
-
     if (this.skyDome) {
       this.skyDome.position.copy(this.camera.position);
     }
-    this.atmosphere?.update(dt, this.smoothCamTarget);
 
     if (this.keyLight && this.keyLight.castShadow) {
       this.keyLight.target.position.copy(this.smoothCamTarget);
@@ -5158,31 +6644,10 @@ class MarbleRushApp {
     const gl = this.renderer?.getContext?.();
     if (!gl || gl.isContextLost()) return;
 
-    if (this.ultraQuality && this.composer && !this.composerFailed && !isSoftwareGl) {
-      try {
-        // Clear any stale WebGL error flag before verifying first post-processing pass
-        if (!this.composerVerified) {
-          while (gl.getError() !== gl.NO_ERROR) {
-            /* drain */
-          }
-        }
-        this.composer.render();
-        if (!this.composerVerified) {
-          const glErr = gl.getError();
-          this.composerVerified = true;
-          if (glErr === gl.INVALID_FRAMEBUFFER_OPERATION || glErr === gl.OUT_OF_MEMORY) {
-            throw new Error(`WebGL post-processing error ${glErr}`);
-          }
-        }
-        return;
-      } catch (err) {
-        console.warn('Post-processing render fallback triggered:', err);
-        this.disablePostProcessing();
-        this.syncUiState();
-      }
-    }
-
     this.renderer.render(this.scene, this.camera);
+    if (this.recorder.isRecording) {
+      this.recorder.captureFrame();
+    }
   }
 
   startLoop() {
@@ -5190,22 +6655,20 @@ class MarbleRushApp {
     const tick = () => {
       try {
         const now = performance.now();
-        const dt = Math.min(0.05, Math.max(0.001, (now - this.lastFrameTime) / 1000));
+        const dt = Math.min(0.085, Math.max(0.001, (now - this.lastFrameTime) / 1000));
         this.lastFrameTime = now;
 
         this.stepSimulation(dt);
         this.updateCamera(dt);
-        if (this.particles) {
-          this.particles.update(dt);
-        }
         if (this.trails) {
           this.trails.update(this.balls, this.camera.position);
         }
         if (this.shared.boosterTex) {
           this.shared.boosterTex.offset.y -= dt * 2.6;
         }
-        if (this.finishLaserBar && this.finishLaserBar.material) {
-          this.finishLaserBar.material.opacity = 0.52 + Math.sin(now * 0.008) * 0.25;
+        if (this.waterMesh) {
+          const baseY = this.waterMesh.userData.baseY ?? this.waterMesh.position.y;
+          this.waterMesh.position.y = baseY + Math.sin(now * 0.0014) * 0.045;
         }
 
         // Gently animate claimed winner podium trophies
@@ -5252,8 +6715,19 @@ class MarbleRushApp {
   }
 
   updateTelemetryHud() {
-    this.dom.hudTimer.textContent = this.formatTime(this.raceElapsedTime);
-    this.dom.hudFinished.textContent = `${this.finishedCount} / ${this.balls.length}`;
+    const shownTime =
+      this.raceState === 'REPLAY' ? this.replay.currentTime : this.raceElapsedTime;
+    this.dom.hudTimer.textContent = this.formatTime(shownTime);
+
+    let finCount = this.finishedCount;
+    if (this.raceState === 'REPLAY') {
+      finCount = 0;
+      const curT = this.replay.currentTime;
+      for (const b of this.balls) {
+        if (b.finishTime !== null && b.finishTime <= curT + 0.04) finCount++;
+      }
+    }
+    this.dom.hudFinished.textContent = `${finCount} / ${this.balls.length}`;
 
     if (this.balls.length === 0) return;
     const sorted = [...this.balls].sort((a, b) => a.rank - b.rank);
@@ -5298,9 +6772,6 @@ class MarbleRushApp {
           <span class="lb-name"></span>
           <span class="lb-metric mono"></span>
         `;
-        row.addEventListener('click', () => {
-          this.selectBall(ball.id, true);
-        });
         list.appendChild(row);
       }
     }
@@ -5309,9 +6780,7 @@ class MarbleRushApp {
       const ball = sorted[i];
       const row = list.children[i];
       row.dataset.ballId = String(ball.id);
-      row.className = `lb-row rank-${ball.rank <= 3 ? ball.rank : 'other'}${
-        ball.id === this.selectedBallIndex ? ' selected' : ''
-      }`;
+      row.className = `lb-row rank-${ball.rank <= 3 ? ball.rank : 'other'}`;
       row.children[0].textContent = String(ball.rank);
       row.children[1].style.backgroundColor = ball.color;
       row.children[2].textContent = ball.name;
@@ -5350,9 +6819,13 @@ class MarbleRushApp {
       curved: 'Curved',
       spiral: 'Spiral',
       multilane: 'Multi-Lane',
+      zigzag: 'Zig-Zag',
+      rollercoaster: 'Drop & Wave',
+      chicane: 'Chicanes',
+      split: 'Split Track',
       mixed: 'Mixed Course',
     };
-    const mapLabel = (ENVIRONMENT_MAPS[this.config.mapPreset] || ENVIRONMENT_MAPS.alpine).label;
+    const mapLabel = (TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition).label;
     this.dom.resultsTrackInfo.textContent = `${this.config.distanceMeters}m · ${
       trackNames[this.config.trackType]
     } · ${mapLabel} · ${this.config.hurdleCount} Hurdles`;
@@ -5369,7 +6842,8 @@ class MarbleRushApp {
     // Configure Export Game Video Panel
     if (this.recordedVideoInfo && this.recordedVideoInfo.blob.size > 0) {
       const mb = (this.recordedVideoInfo.blob.size / (1024 * 1024)).toFixed(2);
-      this.dom.videoExportMeta.textContent = `${mb} MB · ${this.recordedVideoInfo.ext.toUpperCase()} · ${this.formatTime(this.raceElapsedTime)}`;
+      const resLabel = `${this.recordedVideoInfo.width || 1920}×${this.recordedVideoInfo.height || 1080} · ${this.recordedVideoInfo.fps || 60}fps`;
+      this.dom.videoExportMeta.textContent = `${resLabel} · ${mb} MB · ${this.recordedVideoInfo.ext.toUpperCase()} · ${this.formatTime(this.raceElapsedTime)}`;
       this.dom.videoExportPanel.classList.remove('hidden');
       this.dom.btnExportVideo.disabled = false;
       this.dom.btnPreviewVideo.disabled = false;
@@ -5416,6 +6890,9 @@ class MarbleRushApp {
       tbody.appendChild(tr);
     }
 
+    if (this.dom.btnResultsCinematicReplay) {
+      this.dom.btnResultsCinematicReplay.classList.toggle('hidden', !this.replay.hasData());
+    }
     this.dom.resultsModal.classList.remove('hidden');
   }
 
@@ -5435,10 +6912,24 @@ class MarbleRushApp {
   // ==========================================================================
   syncUiState() {
     const s = this.raceState;
+    const isReplay = s === 'REPLAY';
     this.dom.btnStart.classList.toggle('hidden', s !== 'READY' && s !== 'FINISHED');
     this.dom.btnPause.classList.toggle('hidden', s !== 'RACING');
     this.dom.btnResume.classList.toggle('hidden', s !== 'PAUSED');
     this.dom.btnStart.textContent = s === 'FINISHED' ? 'Race Again' : 'Start Race';
+
+    if (this.dom.btnCinematicReplay) {
+      this.dom.btnCinematicReplay.classList.toggle('hidden', isReplay || !this.replay.hasData());
+    }
+    if (this.dom.cameraDock) {
+      this.dom.cameraDock.classList.toggle('hidden', isReplay);
+    }
+    if (this.dom.replayDock) {
+      this.dom.replayDock.classList.toggle('hidden', !isReplay);
+    }
+    if (this.dom.hudReplayBadge) {
+      this.dom.hudReplayBadge.classList.toggle('hidden', !isReplay);
+    }
 
     // Camera mode button active state, Follow-Up Angle button, Director shot tag, Letterbox & Free Cam
     const camBtns = this.dom.cameraModeButtons.querySelectorAll('.cam-btn');
@@ -5446,34 +6937,43 @@ class MarbleRushApp {
       btn.classList.toggle('active', btn.dataset.cam === this.cameraMode);
     });
     if (this.dom.btnCycleShot) {
-      const showCycle = this.cameraMode === 'leader' || this.cameraMode === 'selected';
+      const showCycle = !isReplay && this.cameraMode === 'leader';
       this.dom.btnCycleShot.classList.toggle('hidden', !showCycle);
       this.dom.btnCycleShot.textContent = `Angle: ${FOLLOW_SHOT_ANGLES[this.followShotAngle]}`;
     }
     if (this.dom.cameraShotLabel) {
-      this.dom.cameraShotLabel.classList.toggle('hidden', this.cameraMode !== 'director');
+      this.dom.cameraShotLabel.classList.toggle('hidden', isReplay || this.cameraMode !== 'director');
       this.dom.cameraShotLabel.textContent = this.directorState.shotName;
     }
-    if (this.dom.cinemaBars) {
-      const showBars = this.cameraMode === 'director' && this.hudHidden;
-      this.dom.cinemaBars.classList.toggle('hidden', !showBars);
-    }
     if (this.dom.freeCamBar) {
-      this.dom.freeCamBar.classList.toggle('hidden', this.cameraMode !== 'free');
+      const showFreeBar = (!isReplay && this.cameraMode === 'free') || (isReplay && !this.replay.autoDirector);
+      this.dom.freeCamBar.classList.toggle('hidden', !showFreeBar);
     }
     if (this.dom.btnToggleQuality) {
-      this.dom.btnToggleQuality.textContent = this.ultraQuality ? '4K Ultra' : 'Balanced';
+      this.dom.btnToggleQuality.textContent = this.ultraQuality ? 'High Detail' : 'Standard';
       this.dom.btnToggleQuality.classList.toggle('active', this.ultraQuality);
       if (isSoftwareGl) this.dom.btnToggleQuality.disabled = true;
+    }
+
+    if (this.dom.replaySpeedGroup) {
+      this.dom.replaySpeedGroup.querySelectorAll('.cam-btn').forEach((btn) => {
+        btn.classList.toggle('active', Number(btn.dataset.rspeed) === this.replay.playbackSpeed);
+      });
+    }
+    if (this.dom.btnReplaySlowmo) {
+      this.dom.btnReplaySlowmo.classList.toggle('active', this.replay.autoSlowMo);
+    }
+    if (this.dom.btnReplayAutocam) {
+      this.dom.btnReplayAutocam.classList.toggle('active', this.replay.autoDirector);
+    }
+    if (isReplay) {
+      this.updateReplayHud(false);
     }
   }
 
   setUltraQuality(enabled) {
-    if (isSoftwareGl || this.composerFailed) return;
+    if (isSoftwareGl) return;
     this.ultraQuality = enabled;
-    if (enabled && !this.composer) {
-      this.initPostProcessing();
-    }
     this.onResize();
     this.syncUiState();
   }
@@ -5488,16 +6988,6 @@ class MarbleRushApp {
     this.dom.configDrawer.classList.toggle('collapsed', !open);
     this.dom.btnToggleConfig.setAttribute('aria-expanded', String(open));
     this.dom.btnToggleConfig.textContent = open ? 'Hide Setup' : 'Configure';
-  }
-
-  selectBall(ballId, switchCam = false) {
-    this.selectedBallIndex = THREE.MathUtils.clamp(ballId, 0, this.balls.length - 1);
-    this.dom.selectFollowBall.value = String(this.selectedBallIndex);
-    if (switchCam) {
-      this.setCameraMode('selected');
-    }
-    this.renderBallColorEditor();
-    this.updateLeaderboard(false);
   }
 
   setCameraMode(mode) {
@@ -5515,18 +7005,6 @@ class MarbleRushApp {
       this.sound.playCameraCut();
     }
     this.syncUiState();
-  }
-
-  updateFollowBallSelect() {
-    const sel = this.dom.selectFollowBall;
-    sel.innerHTML = '';
-    for (let i = 0; i < this.config.ballCount; i++) {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = `Ball #${String(i + 1).padStart(2, '0')}`;
-      sel.appendChild(opt);
-    }
-    sel.value = String(this.selectedBallIndex);
   }
 
   renderBallColorEditor() {
@@ -5560,16 +7038,7 @@ class MarbleRushApp {
       hexLabel.textContent = hex.toUpperCase();
 
       left.append(colorInput, idLabel, hexLabel);
-
-      const followBtn = document.createElement('button');
-      followBtn.type = 'button';
-      followBtn.className = `ball-follow-btn${i === this.selectedBallIndex ? ' active' : ''}`;
-      followBtn.textContent = i === this.selectedBallIndex ? 'Following' : 'Follow';
-      followBtn.addEventListener('click', () => {
-        this.selectBall(i, true);
-      });
-
-      row.append(left, followBtn);
+      row.append(left);
       container.appendChild(row);
     }
   }
@@ -5587,11 +7056,13 @@ class MarbleRushApp {
         if (this.balls[existingIdx]) {
           this.balls[existingIdx].color = prevColor;
           this.balls[existingIdx].mesh.material.color.set(prevColor);
+          this.balls[existingIdx].mesh.material.emissive.set(prevColor);
         }
         this.ballColors[index] = normalized;
         if (this.balls[index]) {
           this.balls[index].color = normalized;
           this.balls[index].mesh.material.color.set(normalized);
+          this.balls[index].mesh.material.emissive.set(normalized);
         }
         this.renderBallColorEditor();
         this.updateLeaderboard(false);
@@ -5604,6 +7075,7 @@ class MarbleRushApp {
     if (this.balls[index]) {
       this.balls[index].color = normalized;
       this.balls[index].mesh.material.color.set(normalized);
+      this.balls[index].mesh.material.emissive.set(normalized);
     }
     this.updateLeaderboard(false);
   }
@@ -5627,6 +7099,12 @@ class MarbleRushApp {
       'hidden',
       this.config.distancePreset !== 'custom'
     );
+
+    if (this.dom.darknessPresets) {
+      this.dom.darknessPresets.querySelectorAll('.seg-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.darkness === this.config.colorDarkness);
+      });
+    }
 
     this.dom.mapPresetGroup.querySelectorAll('.seg-btn').forEach((b) => {
       b.classList.toggle('active', b.dataset.map === this.config.mapPreset);
@@ -5730,7 +7208,7 @@ class MarbleRushApp {
         const base = COLOR_PALETTES[this.config.palette] || COLOR_PALETTES.grandprix;
         let cand = base[nextIdx % base.length].toLowerCase();
         if (!this.config.allowDuplicateColors && used.has(cand)) {
-          cand = generateDistinctColor(nextIdx, used);
+          cand = generateDistinctColor(nextIdx, used, this.config.palette);
         }
         used.add(cand);
         this.ballColors.push(cand);
@@ -5781,6 +7259,17 @@ class MarbleRushApp {
       this.syncSettingsControlsToDom();
       this.rebuildTrackAndRace({ preserveCamera: false });
     });
+
+    // Colour Darkness preset
+    if (this.dom.darknessPresets) {
+      this.dom.darknessPresets.querySelectorAll('.seg-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.config.colorDarkness = btn.dataset.darkness;
+          this.syncSettingsControlsToDom();
+          this.rebuildTrackAndRace({ preserveCamera: true });
+        });
+      });
+    }
 
     // Arena Map & Environment presets
     this.dom.mapPresetGroup.querySelectorAll('.seg-btn').forEach((btn) => {
@@ -5891,6 +7380,7 @@ class MarbleRushApp {
         for (let i = 0; i < this.balls.length; i++) {
           this.balls[i].color = this.ballColors[i];
           this.balls[i].mesh.material.color.set(this.ballColors[i]);
+          this.balls[i].mesh.material.emissive.set(this.ballColors[i]);
         }
         this.syncSettingsControlsToDom();
         this.renderBallColorEditor();
@@ -5906,11 +7396,12 @@ class MarbleRushApp {
         for (let i = 0; i < this.config.ballCount; i++) {
           let c = (this.ballColors[i] || '#f59e0b').toLowerCase();
           if (used.has(c)) {
-            c = generateDistinctColor(i, used);
+            c = generateDistinctColor(i, used, this.config.palette);
             this.ballColors[i] = c;
             if (this.balls[i]) {
               this.balls[i].color = c;
               this.balls[i].mesh.material.color.set(c);
+              this.balls[i].mesh.material.emissive.set(c);
             }
           }
           used.add(c);
@@ -5920,17 +7411,13 @@ class MarbleRushApp {
       }
     });
 
-    // Camera modes, Follow-Up Angle cycling & Zen HUD
+    // Camera modes, Follow-Up Angle cycling & Clean HUD toggle
     this.dom.cameraModeButtons.querySelectorAll('.cam-btn').forEach((btn) => {
       btn.addEventListener('click', () => this.setCameraMode(btn.dataset.cam));
     });
     if (this.dom.btnCycleShot) {
       this.dom.btnCycleShot.addEventListener('click', () => this.cycleFollowShot());
     }
-
-    this.dom.selectFollowBall.addEventListener('change', (e) => {
-      this.selectBall(Number(e.target.value), true);
-    });
 
     const toggleZenHud = () => {
       this.hudHidden = !this.hudHidden;
@@ -5969,29 +7456,88 @@ class MarbleRushApp {
       this.setConfigDrawerOpen(true);
     });
 
-    // Raycast click on 3D marbles to select & follow
-    this.canvas.addEventListener('pointerdown', (e) => {
-      this._pointerDownPos = { x: e.clientX, y: e.clientY };
-    });
-    this.canvas.addEventListener('pointerup', (e) => {
-      const dist = Math.hypot(
-        e.clientX - this._pointerDownPos.x,
-        e.clientY - this._pointerDownPos.y
-      );
-      if (dist > 6) return;
-      const rect = this.canvas.getBoundingClientRect();
-      this._pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this._pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      this._raycaster.setFromCamera(this._pointer, this.camera);
-      const meshes = this.balls.map((b) => b.mesh);
-      const hits = this._raycaster.intersectObjects(meshes, false);
-      if (hits.length > 0) {
-        const idx = hits[0].object.userData.ballIndex;
-        if (typeof idx === 'number') {
-          this.selectBall(idx, true);
+    // Cinematic Replay Controls & Interactive Highlight Timeline
+    if (this.dom.btnCinematicReplay) {
+      this.dom.btnCinematicReplay.addEventListener('click', () => this.enterReplayMode(0));
+    }
+    if (this.dom.btnResultsCinematicReplay) {
+      this.dom.btnResultsCinematicReplay.addEventListener('click', () => this.enterReplayMode(0));
+    }
+    if (this.dom.btnReplayExit) {
+      this.dom.btnReplayExit.addEventListener('click', () => this.exitReplayMode(false));
+    }
+    if (this.dom.btnReplayPlay) {
+      this.dom.btnReplayPlay.addEventListener('click', () => {
+        if (this.raceState !== 'REPLAY') return;
+        if (!this.replay.isPlaying && this.replay.currentTime >= this.replay.totalDuration - 0.05) {
+          this.replay.isPlaying = true;
+          this.seekReplay(0);
+        } else {
+          this.replay.isPlaying = !this.replay.isPlaying;
+          if (!this.replay.isPlaying) this.sound.updateRollingBed(0, false);
         }
-      }
-    });
+        this.syncUiState();
+      });
+    }
+    if (this.dom.btnReplayPrevHl) {
+      this.dom.btnReplayPrevHl.addEventListener('click', () => this.jumpToReplayHighlight(-1));
+    }
+    if (this.dom.btnReplayNextHl) {
+      this.dom.btnReplayNextHl.addEventListener('click', () => this.jumpToReplayHighlight(1));
+    }
+    if (this.dom.replaySpeedGroup) {
+      this.dom.replaySpeedGroup.querySelectorAll('.cam-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          this.replay.playbackSpeed = Number(btn.dataset.rspeed) || 1;
+          this.syncUiState();
+        });
+      });
+    }
+    if (this.dom.btnReplaySlowmo) {
+      this.dom.btnReplaySlowmo.addEventListener('click', () => {
+        this.replay.autoSlowMo = !this.replay.autoSlowMo;
+        this.syncUiState();
+      });
+    }
+    if (this.dom.btnReplayAutocam) {
+      this.dom.btnReplayAutocam.addEventListener('click', () => {
+        this.replay.autoDirector = !this.replay.autoDirector;
+        if (!this.replay.autoDirector) {
+          this.controls.target.copy(this.smoothCamTarget);
+          this.controls.update();
+        } else {
+          this.replay.activeShotIdx = -1;
+          this.directorState.justCut = true;
+        }
+        this.syncUiState();
+      });
+    }
+    if (this.dom.replayScrubberWrap) {
+      let isScrubbing = false;
+      const scrubFromPointer = (clientX) => {
+        const rect = this.dom.replayScrubberWrap.getBoundingClientRect();
+        const frac = THREE.MathUtils.clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+        this.seekReplay(frac * this.replay.totalDuration);
+      };
+      this.dom.replayScrubberWrap.addEventListener('pointerdown', (e) => {
+        isScrubbing = true;
+        try {
+          this.dom.replayScrubberWrap.setPointerCapture(e.pointerId);
+        } catch {
+          // Ignore capture errors
+        }
+        scrubFromPointer(e.clientX);
+      });
+      this.dom.replayScrubberWrap.addEventListener('pointermove', (e) => {
+        if (!isScrubbing) return;
+        scrubFromPointer(e.clientX);
+      });
+      const stopScrub = () => {
+        isScrubbing = false;
+      };
+      this.dom.replayScrubberWrap.addEventListener('pointerup', stopScrub);
+      this.dom.replayScrubberWrap.addEventListener('pointercancel', stopScrub);
+    }
 
     // Free camera quick actions
     this.dom.btnFreeFocusLeader.addEventListener('click', () => this.snapFreeCamToPack());
@@ -6001,7 +7547,7 @@ class MarbleRushApp {
     window.addEventListener('keydown', (e) => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
       if (
-        this.cameraMode === 'free' &&
+        (this.cameraMode === 'free' || (this.raceState === 'REPLAY' && !this.replay.autoDirector)) &&
         (e.code === 'Space' || e.code.startsWith('Arrow'))
       ) {
         e.preventDefault();
@@ -6009,17 +7555,35 @@ class MarbleRushApp {
       this.keysPressed.add(e.code);
 
       if (e.key === 'h' || e.key === 'H') toggleZenHud();
-      else if (e.key === '1') this.setCameraMode('overview');
-      else if (e.key === '2') this.setCameraMode('leader');
-      else if (e.key === '3') this.setCameraMode('selected');
+      else if (this.raceState === 'REPLAY' && e.code === 'Escape') {
+        this.exitReplayMode(false);
+      } else if (this.raceState === 'REPLAY' && e.code === 'Space' && this.replay.autoDirector) {
+        e.preventDefault();
+        if (!this.replay.isPlaying && this.replay.currentTime >= this.replay.totalDuration - 0.05) {
+          this.replay.isPlaying = true;
+          this.seekReplay(0);
+        } else {
+          this.replay.isPlaying = !this.replay.isPlaying;
+          if (!this.replay.isPlaying) this.sound.updateRollingBed(0, false);
+        }
+        this.syncUiState();
+      } else if (this.raceState === 'REPLAY' && e.code === 'ArrowLeft' && this.replay.autoDirector) {
+        e.preventDefault();
+        if (e.shiftKey) this.jumpToReplayHighlight(-1);
+        else this.seekReplay(this.replay.currentTime - 1.5);
+      } else if (this.raceState === 'REPLAY' && e.code === 'ArrowRight' && this.replay.autoDirector) {
+        e.preventDefault();
+        if (e.shiftKey) this.jumpToReplayHighlight(1);
+        else this.seekReplay(this.replay.currentTime + 1.5);
+      } else if (e.key === '1') this.setCameraMode('overview');
+      else if (e.key === '2') this.setCameraMode('director');
+      else if (e.key === '3') this.setCameraMode('leader');
       else if (e.key === '4') this.setCameraMode('topdown');
       else if (e.key === '5') this.setCameraMode('finish');
       else if (e.key === '6') this.setCameraMode('free');
-      else if (e.key === '7') this.setCameraMode('director');
-      else if ((e.key === 'c' || e.key === 'C') && (this.cameraMode === 'leader' || this.cameraMode === 'selected')) {
+      else if ((e.key === 'c' || e.key === 'C') && this.cameraMode === 'leader') {
         this.cycleFollowShot();
-      }
-      else if (e.code === 'Space' && this.cameraMode !== 'free') {
+      } else if (e.code === 'Space' && this.cameraMode !== 'free') {
         e.preventDefault();
         if (this.raceState === 'RACING') this.pauseRace();
         else if (this.raceState === 'PAUSED') this.resumeRace();
