@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Marble Rush 3D — Physics Ball Racing Simulator</title>
+    <meta
+      name="description"
+      content="Playable 3D ball racing physics simulator built with Three.js and Rapier.js."
+    />
+    <meta property="og:title" content="Marble Rush 3D" />
+    <meta
+      property="og:description"
+      content="Playable 3D ball racing physics simulator built with Three.js and Rapier.js."
+    />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Oxanium:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <!-- Full-Viewport 3D WebGL Canvas -->
+    <div id="viewport-container">
+      <canvas id="race-canvas" aria-label="Marble Rush 3D Racing Arena"></canvas>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-screen" role="status" aria-live="polite">
+      <div class="loading-card">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <h1 class="loading-title">Marble Rush 3D</h1>
+        <p id="loading-status" class="loading-subtitle">Initializing 3D engine &amp; Rapier physics...</p>
+      </div>
+    </div>
+
+    <!-- Error Overlay (shown only if WebGL / WASM fails) -->
+    <div id="error-screen" class="hidden" role="alert">
+      <div class="error-card">
+        <h2>Simulation Initialization Error</h2>
+        <p id="error-message">Unable to initialize 3D WebGL or Rapier physics.</p>
+        <button id="btn-retry-init" class="btn btn-primary" type="button">Reload Simulator</button>
+      </div>
+    </div>
+
+    <!-- Main HUD Layer -->
+    <div id="hud-root">
+      <!-- Top Broadcast Header -->
+      <header id="top-bar">
+        <div class="top-zone-left">
+          <span class="brand-title">Marble Rush 3D</span>
+          <button
+            id="btn-toggle-config"
+            class="btn btn-surface btn-sm"
+            type="button"
+            aria-expanded="true"
+            aria-controls="config-drawer"
+          >
+            Hide Setup
+          </button>
+        </div>
+
+        <div class="top-zone-center" aria-label="Live Race Telemetry">
+          <div class="telemetry-item">
+            <span class="telemetry-label">Time</span>
+            <span id="hud-timer" class="telemetry-value mono">00:00.00</span>
+          </div>
+          <span class="telemetry-sep" aria-hidden="true">/</span>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Leader</span>
+            <span id="hud-leader" class="telemetry-value">
+              <span id="hud-leader-swatch" class="swatch-dot hidden"></span>
+              <span id="hud-leader-name">Ready</span>
+            </span>
+          </div>
+          <span class="telemetry-sep" aria-hidden="true">/</span>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Finished</span>
+            <span id="hud-finished" class="telemetry-value mono">0 / 10</span>
+          </div>
+          <div class="progress-track-wrap" title="Race progress">
+            <div id="hud-progress-bar" class="progress-track-fill"></div>
+          </div>
+          <span id="hud-progress-pct" class="telemetry-value mono">0%</span>
+          <span class="telemetry-sep" aria-hidden="true">/</span>
+          <div class="telemetry-item">
+            <span class="telemetry-label">Top Speed</span>
+            <span id="hud-speed" class="telemetry-value mono">0.0 m/s</span>
+          </div>
+          <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording full gameplay video">REC</span>
+        </div>
+
+        <div class="top-zone-right">
+          <button id="btn-start-race" class="btn btn-primary" type="button">Start Race</button>
+          <button id="btn-pause-race" class="btn btn-surface hidden" type="button">Pause</button>
+          <button id="btn-resume-race" class="btn btn-primary hidden" type="button">Resume</button>
+          <button id="btn-restart-race" class="btn btn-surface" type="button">Restart</button>
+          <button
+            id="btn-view-results"
+            class="btn btn-accent hidden"
+            type="button"
+          >
+            Results
+          </button>
+          <button
+            id="btn-toggle-quality"
+            class="btn btn-icon"
+            type="button"
+            title="Toggle 4K Ultra Post-Processing"
+            aria-label="Toggle 4K Graphics Quality"
+          >
+            4K Ultra
+          </button>
+          <button
+            id="btn-toggle-sound"
+            class="btn btn-icon"
+            type="button"
+            title="Toggle Sound Effects"
+            aria-label="Toggle Sound Effects"
+          >
+            Sound On
+          </button>
+        </div>
+      </header>
+
+      <!-- Left Collapsible Game Configuration Drawer -->
+      <aside id="config-drawer" aria-label="Race Configuration Panel">
+        <div class="drawer-tabs" role="tablist">
+          <button
+            class="tab-btn active"
+            role="tab"
+            aria-selected="true"
+            data-tab="tab-track"
+            type="button"
+          >
+            Track &amp; Physics
+          </button>
+          <button
+            class="tab-btn"
+            role="tab"
+            aria-selected="false"
+            data-tab="tab-hurdles"
+            type="button"
+          >
+            Hurdles
+          </button>
+          <button
+            class="tab-btn"
+            role="tab"
+            aria-selected="false"
+            data-tab="tab-balls"
+            type="button"
+          >
+            Balls &amp; Colours
+          </button>
+        </div>
+
+        <div class="drawer-body">
+          <!-- TAB 1: TRACK & PHYSICS -->
+          <section id="tab-track" class="tab-panel active">
+            <div class="field-group">
+              <div class="field-header">
+                <label for="input-ball-count">Number of Balls</label>
+                <span id="val-ball-count" class="field-readout mono">10</span>
+              </div>
+              <div class="range-number-row">
+                <input
+                  id="input-ball-count"
+                  type="range"
+                  min="2"
+                  max="50"
+                  step="1"
+                  value="10"
+                />
+                <input
+                  id="input-ball-count-num"
+                  type="number"
+                  min="2"
+                  max="50"
+                  step="1"
+                  value="10"
+                  class="num-input mono"
+                  aria-label="Number of balls numeric input"
+                />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <div class="field-header">
+                <label for="input-ball-speed">Ball Speed Multiplier</label>
+                <span id="val-ball-speed" class="field-readout mono">1.0x</span>
+              </div>
+              <input
+                id="input-ball-speed"
+                type="range"
+                min="0.5"
+                max="3.0"
+                step="0.1"
+                value="1.0"
+              />
+              <div class="preset-row" data-speed-presets>
+                <button type="button" class="seg-btn" data-speed="0.5">0.5x</button>
+                <button type="button" class="seg-btn active" data-speed="1.0">1.0x</button>
+                <button type="button" class="seg-btn" data-speed="1.5">1.5x</button>
+                <button type="button" class="seg-btn" data-speed="2.0">2.0x</button>
+                <button type="button" class="seg-btn" data-speed="3.0">3.0x</button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <div class="field-header">
+                <label>Finish-Line Distance</label>
+                <span id="val-distance" class="field-readout mono">100 m</span>
+              </div>
+              <div class="preset-row" id="distance-presets">
+                <button type="button" class="seg-btn" data-dist="50">Short 50m</button>
+                <button type="button" class="seg-btn active" data-dist="100">Med 100m</button>
+                <button type="button" class="seg-btn" data-dist="200">Long 200m</button>
+                <button type="button" class="seg-btn" data-dist="custom">Custom</button>
+              </div>
+              <div id="custom-distance-wrap" class="custom-inline hidden">
+                <label for="input-custom-distance">Custom metres (30–350):</label>
+                <input
+                  id="input-custom-distance"
+                  type="number"
+                  min="30"
+                  max="350"
+                  step="5"
+                  value="120"
+                  class="num-input mono"
+                />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">Arena Map &amp; Environment</label>
+              <div class="grid-3-btns" id="map-preset-group">
+                <button type="button" class="seg-btn active" data-map="alpine">Alpine</button>
+                <button type="button" class="seg-btn" data-map="sunset">Sunset</button>
+                <button type="button" class="seg-btn" data-map="cyber">Neon Night</button>
+                <button type="button" class="seg-btn" data-map="arctic">Polar Ice</button>
+                <button type="button" class="seg-btn span-2" data-map="caldera">Volcanic Caldera</button>
+              </div>
+              <label class="checkbox-label" for="input-cycle-map">
+                <input id="input-cycle-map" type="checkbox" checked />
+                <span>Change map on Generate New Track</span>
+              </label>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">Track Layout</label>
+              <div class="grid-2-btns" id="track-type-group">
+                <button type="button" class="seg-btn active" data-track="straight">Straight</button>
+                <button type="button" class="seg-btn" data-track="curved">Curved</button>
+                <button type="button" class="seg-btn" data-track="spiral">Spiral</button>
+                <button type="button" class="seg-btn" data-track="multilane">Multi-Lane</button>
+                <button type="button" class="seg-btn span-2" data-track="mixed">
+                  Mixed Obstacle Course
+                </button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <div class="field-header">
+                <label for="input-track-width">Track Width</label>
+                <span id="val-track-width" class="field-readout mono">10 m</span>
+              </div>
+              <input
+                id="input-track-width"
+                type="range"
+                min="6"
+                max="16"
+                step="1"
+                value="10"
+              />
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">Gravity Preset</label>
+              <div class="preset-row" id="gravity-presets">
+                <button type="button" class="seg-btn" data-gravity="moon">Moon</button>
+                <button type="button" class="seg-btn active" data-gravity="earth">Earth</button>
+                <button type="button" class="seg-btn" data-gravity="heavy">Heavy</button>
+                <button type="button" class="seg-btn" data-gravity="turbo">Turbo</button>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">Surface Friction Preset</label>
+              <div class="preset-row" id="friction-presets">
+                <button type="button" class="seg-btn" data-friction="ice">Ice</button>
+                <button type="button" class="seg-btn active" data-friction="polished">Polished</button>
+                <button type="button" class="seg-btn" data-friction="rubber">Rubber</button>
+                <button type="button" class="seg-btn" data-friction="grip">High Grip</button>
+              </div>
+            </div>
+
+            <div class="field-group toggle-row">
+              <label class="checkbox-label" for="input-experimental-variance">
+                <input id="input-experimental-variance" type="checkbox" />
+                <span>Experimental: Per-ball mass &amp; bounce variance</span>
+              </label>
+            </div>
+          </section>
+
+          <!-- TAB 2: HURDLES -->
+          <section id="tab-hurdles" class="tab-panel">
+            <div class="field-group">
+              <div class="field-header">
+                <label for="input-hurdle-count">Number of Hurdles</label>
+                <span id="val-hurdle-count" class="field-readout mono">10</span>
+              </div>
+              <div class="range-number-row">
+                <input
+                  id="input-hurdle-count"
+                  type="range"
+                  min="0"
+                  max="30"
+                  step="1"
+                  value="10"
+                />
+                <input
+                  id="input-hurdle-count-num"
+                  type="number"
+                  min="0"
+                  max="30"
+                  step="1"
+                  value="10"
+                  class="num-input mono"
+                  aria-label="Number of hurdles numeric input"
+                />
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block">Hurdle Size</label>
+              <div class="preset-row" id="hurdle-size-group">
+                <button type="button" class="seg-btn" data-size="small">Small</button>
+                <button type="button" class="seg-btn active" data-size="medium">Medium</button>
+                <button type="button" class="seg-btn" data-size="large">Large</button>
+              </div>
+            </div>
+
+            <div class="field-group toggle-row">
+              <label class="checkbox-label" for="input-random-hurdles">
+                <input id="input-random-hurdles" type="checkbox" checked />
+                <span>Randomize hurdle placement &amp; order</span>
+              </label>
+            </div>
+
+            <div class="field-group">
+              <div class="field-header">
+                <label>Enabled Obstacle Types</label>
+                <div class="mini-actions">
+                  <button id="btn-obstacles-all" type="button" class="link-btn">All</button>
+                  <span aria-hidden="true">·</span>
+                  <button id="btn-obstacles-none" type="button" class="link-btn">None</button>
+                </div>
+              </div>
+              <div class="obstacle-checklist" id="obstacle-types-list">
+                <label class="obstacle-item">
+                  <input type="checkbox" value="rotating_bar" checked />
+                  <span>Rotating Bars</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="moving_gate" checked />
+                  <span>Moving Gates</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="speed_bump" checked />
+                  <span>Speed Bumps</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="spinning_wheel" checked />
+                  <span>Spinning Wheels</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="jump_ramp" checked />
+                  <span>Jump Ramps</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="narrow_passage" checked />
+                  <span>Narrow Passages</span>
+                </label>
+                <label class="obstacle-item">
+                  <input type="checkbox" value="moving_platform" checked />
+                  <span>Moving Platforms</span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <!-- TAB 3: BALLS & COLOURS -->
+          <section id="tab-balls" class="tab-panel">
+            <div class="field-group">
+              <label class="field-label-block">Colour Presets</label>
+              <div class="grid-2-btns" id="color-presets-group">
+                <button type="button" class="seg-btn active" data-palette="grandprix">Grand Prix</button>
+                <button type="button" class="seg-btn" data-palette="mineral">Mineral</button>
+                <button type="button" class="seg-btn" data-palette="contrast">High Contrast</button>
+                <button type="button" class="seg-btn" data-palette="pastel">Pastel Ceramic</button>
+                <button type="button" class="seg-btn span-2" data-palette="steel">
+                  Metallic &amp; Carbon
+                </button>
+              </div>
+            </div>
+
+            <div class="field-group ball-tools-row">
+              <button id="btn-randomize-colors" class="btn btn-surface btn-sm flex-1" type="button">
+                Randomize Ball Colours
+              </button>
+            </div>
+
+            <div class="field-group toggle-row">
+              <label class="checkbox-label" for="input-allow-duplicates">
+                <input id="input-allow-duplicates" type="checkbox" />
+                <span>Allow duplicate ball colours</span>
+              </label>
+            </div>
+
+            <div class="field-group">
+              <div class="field-header">
+                <label>Individual Ball Selection</label>
+                <span id="ball-count-caption" class="field-readout mono">10 balls</span>
+              </div>
+              <div id="ball-list-container" class="ball-list"></div>
+            </div>
+          </section>
+        </div>
+
+        <div class="drawer-footer">
+          <button id="btn-generate-track" class="btn btn-surface flex-1" type="button">
+            Generate New Track
+          </button>
+          <button id="btn-reset-settings" class="btn btn-ghost" type="button">
+            Reset Settings
+          </button>
+        </div>
+      </aside>
+
+      <!-- Right Live Leaderboard Panel -->
+      <aside id="leaderboard-panel" aria-label="Live Race Standings">
+        <div class="leaderboard-header">
+          <span class="leaderboard-title">Live Standings</span>
+          <button id="btn-toggle-leaderboard" class="link-btn" type="button">Hide</button>
+        </div>
+        <div id="leaderboard-list" class="leaderboard-list"></div>
+      </aside>
+
+      <!-- Free Camera Controls Bar (shown only in Free Camera mode) -->
+      <div id="free-cam-bar" class="free-cam-bar hidden" aria-label="Free Camera Controls">
+        <span class="free-cam-hints">
+          <kbd class="kbd">Drag</kbd> Orbit
+          <span class="hint-sep">·</span>
+          <kbd class="kbd">Right-Drag</kbd> Pan
+          <span class="hint-sep">·</span>
+          <kbd class="kbd">Scroll</kbd> Zoom
+          <span class="hint-sep">·</span>
+          <kbd class="kbd">WASD</kbd> / <kbd class="kbd">QE</kbd> Fly
+          <span class="hint-sep">·</span>
+          <kbd class="kbd">Shift</kbd> Fast
+        </span>
+        <div class="free-cam-actions">
+          <button id="btn-free-focus-leader" class="cam-btn" type="button">Snap to Pack</button>
+          <button id="btn-free-center-track" class="cam-btn" type="button">Center Track</button>
+        </div>
+      </div>
+
+      <!-- Cinematic Letterbox Bars (active in Director + Zen Mode) -->
+      <div id="cinema-bars" class="cinema-bars hidden" aria-hidden="true">
+        <div class="cinema-bar top"></div>
+        <div class="cinema-bar bottom"></div>
+      </div>
+
+      <!-- Bottom Camera Mode & Simulation Dock -->
+      <div id="camera-dock" aria-label="Camera Mode Controls">
+        <div class="camera-dock-inner">
+          <span class="dock-label">Camera</span>
+          <div class="camera-modes-row" id="camera-mode-buttons">
+            <button type="button" class="cam-btn active" data-cam="overview">Overview</button>
+            <button type="button" class="cam-btn" data-cam="director">Director</button>
+            <button type="button" class="cam-btn" data-cam="leader">Follow Leader</button>
+            <button type="button" class="cam-btn" data-cam="selected">Follow Ball</button>
+            <button type="button" class="cam-btn" data-cam="topdown">Top-Down</button>
+            <button type="button" class="cam-btn" data-cam="finish">Finish Line</button>
+            <button type="button" class="cam-btn" data-cam="free">Free Camera</button>
+          </div>
+          <button
+            id="btn-cycle-shot"
+            class="cam-btn hidden"
+            type="button"
+            title="Cycle Follow-Up Camera Angle (C)"
+          >
+            Angle: Chase
+          </button>
+          <span id="camera-shot-label" class="camera-shot-tag hidden">Hero Dolly</span>
+          <div id="follow-ball-picker" class="follow-picker">
+            <label for="select-follow-ball" class="sr-only">Select Ball to Follow</label>
+            <select id="select-follow-ball" class="ball-select"></select>
+          </div>
+          <button id="btn-hide-hud" class="cam-btn cam-btn-subtle" type="button" title="Toggle HUD (H)">
+            Zen Mode
+          </button>
+        </div>
+      </div>
+
+      <!-- Restore HUD button when in Zen Mode -->
+      <button id="btn-show-hud" class="btn btn-surface hidden" type="button">
+        Show Controls (H)
+      </button>
+
+      <!-- Countdown Overlay (3, 2, 1, GO!) -->
+      <div id="countdown-overlay" class="hidden" aria-live="assertive">
+        <div id="countdown-text" class="countdown-numeral">3</div>
+      </div>
+
+      <!-- Winner Announcement Toast -->
+      <div id="winner-toast" class="hidden" role="status" aria-live="polite">
+        <span id="winner-toast-swatch" class="swatch-dot"></span>
+        <span id="winner-toast-text">Ball #01 Wins the Race!</span>
+      </div>
+    </div>
+
+    <!-- Post-Race Results Modal -->
+    <div id="results-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="results-heading">
+      <div class="results-card">
+        <div class="results-header">
+          <div>
+            <p class="results-kicker">Official Simulation Results</p>
+            <h2 id="results-heading">Race Complete</h2>
+          </div>
+          <div class="results-meta mono">
+            <span id="results-duration">00:00.00</span>
+            <span aria-hidden="true">·</span>
+            <span id="results-track-info">100m Curved</span>
+          </div>
+        </div>
+
+        <div id="winner-spotlight" class="winner-spotlight">
+          <div id="winner-badge-color" class="winner-orb"></div>
+          <div class="winner-details">
+            <span class="winner-label">Race Winner</span>
+            <h3 id="winner-title">Ball #01</h3>
+            <p id="winner-time-line" class="mono">Finish Time: 00.00s</p>
+          </div>
+        </div>
+
+        <div id="video-export-panel" class="video-export-panel hidden">
+          <div class="video-export-info">
+            <span class="video-export-title">Full Gameplay Recording</span>
+            <span id="video-export-meta" class="video-export-meta mono">Preparing video...</span>
+          </div>
+          <div class="video-export-btns">
+            <button id="btn-preview-video" class="btn btn-surface btn-sm" type="button">
+              Preview Replay
+            </button>
+            <button id="btn-export-video" class="btn btn-accent btn-sm" type="button">
+              Export Game Video
+            </button>
+          </div>
+        </div>
+
+        <div id="video-preview-wrap" class="video-preview-wrap hidden">
+          <video id="replay-video-player" controls playsinline></video>
+        </div>
+
+        <div class="results-table-wrap">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Pos</th>
+                <th>Ball</th>
+                <th>Distance</th>
+                <th>Peak Speed</th>
+                <th>Finish Time</th>
+                <th>Gap</th>
+              </tr>
+            </thead>
+            <tbody id="results-table-body"></tbody>
+          </table>
+        </div>
+
+        <div class="results-actions">
+          <button id="btn-results-race-again" class="btn btn-primary" type="button">
+            Race Again
+          </button>
+          <button id="btn-results-new-track" class="btn btn-surface" type="button">
+            Generate New Track
+          </button>
+          <button id="btn-results-settings" class="btn btn-ghost" type="button">
+            Change Settings
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./script.js"></script>
+  </body>
+</html>

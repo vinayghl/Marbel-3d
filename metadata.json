@@ -1,0 +1,6 @@
+{
+  "name": "Marble Rush 3D",
+  "description": "Playable 3D ball racing physics simulator built with Three.js and Rapier.js.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
