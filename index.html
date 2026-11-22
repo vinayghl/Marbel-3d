@@ -57,10 +57,10 @@
             id="btn-toggle-config"
             class="btn btn-surface btn-sm"
             type="button"
-            aria-expanded="true"
+            aria-expanded="false"
             aria-controls="config-drawer"
           >
-            Hide Setup
+            Setup
           </button>
         </div>
 
@@ -88,13 +88,13 @@
           <span id="hud-progress-pct" class="telemetry-value mono">0%</span>
           <span class="telemetry-sep" aria-hidden="true">/</span>
           <div class="telemetry-item">
-            <span class="telemetry-label">Top Speed</span>
+            <span class="telemetry-label">Speed</span>
             <span id="hud-speed" class="telemetry-value mono">0.0 m/s</span>
           </div>
-          <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording full gameplay video">REC</span>
+          <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording gameplay video">REC</span>
           <span id="hud-replay-badge" class="replay-moment-badge hidden">
-            <span class="replay-pill-tag">REPLAY</span>
-            <span id="hud-replay-moment-text">Auto Director · Launch</span>
+            <span class="replay-tag">REPLAY</span>
+            <span id="hud-replay-moment-text">Auto Director</span>
           </span>
         </div>
 
@@ -107,9 +107,9 @@
             id="btn-cinematic-replay"
             class="btn btn-accent hidden"
             type="button"
-            title="Watch auto-cut Cinematic Replay of intense physics moments"
+            title="Watch auto-cut Cinematic Replay"
           >
-            Cinematic Replay
+            Replay
           </button>
           <button
             id="btn-view-results"
@@ -119,28 +119,39 @@
             Results
           </button>
           <button
-            id="btn-toggle-quality"
-            class="btn btn-icon"
+            id="btn-toggle-music"
+            class="btn btn-icon active"
             type="button"
-            title="Toggle High Detail Rendering"
-            aria-label="Toggle Rendering Detail"
+            title="Toggle Relaxing Background Music"
+            aria-label="Toggle Background Music"
           >
-            High Detail
+            Music On
           </button>
           <button
             id="btn-toggle-sound"
-            class="btn btn-icon"
+            class="btn btn-icon active"
             type="button"
             title="Toggle Sound Effects"
             aria-label="Toggle Sound Effects"
           >
             Sound On
           </button>
+          <select
+            id="select-quality"
+            class="form-select form-select-compact form-select-topbar"
+            title="Rendering & Recording Resolution"
+            aria-label="Rendering and Recording Resolution"
+          >
+            <option value="standard">1080p Standard</option>
+            <option value="uhd4k">4K UHD</option>
+            <option value="uhd8k">8K Cinema</option>
+            <option value="master32k" selected>32K Master</option>
+          </select>
         </div>
       </header>
 
-      <!-- Left Collapsible Game Configuration Drawer -->
-      <aside id="config-drawer" aria-label="Race Configuration Panel">
+      <!-- Left Collapsible Setup Panel (Collapsed by default for clear view of track) -->
+      <aside id="config-drawer" class="collapsed" aria-label="Race Configuration Panel">
         <div class="drawer-tabs" role="tablist">
           <button
             class="tab-btn active"
@@ -167,13 +178,102 @@
             data-tab="tab-balls"
             type="button"
           >
-            Balls &amp; Colours
+            Balls &amp; Audio
           </button>
         </div>
 
         <div class="drawer-body">
           <!-- TAB 1: TRACK & PHYSICS -->
           <section id="tab-track" class="tab-panel active">
+            <div class="field-group">
+              <label class="field-label-block" for="select-map">World Territory</label>
+              <select id="select-map" class="form-select">
+                <option value="expedition">All Territories (Blend)</option>
+                <option value="alpine">Alpine Valley</option>
+                <option value="canyon">Red Canyon</option>
+                <option value="coastal">Coastal Cliffs</option>
+                <option value="arctic">Nordic Fjord</option>
+                <option value="savanna">Savanna Plains</option>
+                <option value="volcanic">Volcanic Basalt</option>
+                <option value="bamboo">Misty Highlands</option>
+                <option value="badlands">Golden Dunes</option>
+                <option value="autumn">Autumn Timberland</option>
+              </select>
+              <label class="checkbox-label" for="input-cycle-map">
+                <input id="input-cycle-map" type="checkbox" checked />
+                <span>Rotate territory on Generate New Track</span>
+              </label>
+            </div>
+
+            <div class="field-group">
+              <label class="field-label-block" for="select-track">Track Layout</label>
+              <select id="select-track" class="form-select">
+                <option value="straight">Straight Run</option>
+                <option value="curved">Sweeping Curves</option>
+                <option value="spiral">Helix Spiral</option>
+                <option value="multilane">Multi-Lane Circuit</option>
+                <option value="zigzag">Zig-Zag Switchback</option>
+                <option value="rollercoaster">Drop &amp; Wave</option>
+                <option value="chicane">Technical Chicanes</option>
+                <option value="split">Twin Split Track</option>
+                <option value="mixed">Mixed Obstacle Course</option>
+              </select>
+            </div>
+
+            <div class="field-two-col">
+              <div class="field-group">
+                <label class="field-label-block" for="select-distance">Track Length</label>
+                <select id="select-distance" class="form-select">
+                  <option value="50">Short (50 m)</option>
+                  <option value="100" selected>Medium (100 m)</option>
+                  <option value="200">Long (200 m)</option>
+                  <option value="custom">Custom (m)</option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label class="field-label-block" for="select-darkness">Colour Depth</label>
+                <select id="select-darkness" class="form-select">
+                  <option value="standard" selected>Standard</option>
+                  <option value="deep">Deep</option>
+                  <option value="ultra">Ultra Dark</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="custom-distance-wrap" class="custom-inline hidden">
+              <label for="input-custom-distance">Custom metres (30–350):</label>
+              <input
+                id="input-custom-distance"
+                type="number"
+                min="30"
+                max="350"
+                step="5"
+                value="120"
+                class="num-input mono"
+              />
+            </div>
+
+            <div class="field-two-col">
+              <div class="field-group">
+                <label class="field-label-block" for="select-gravity">Gravity</label>
+                <select id="select-gravity" class="form-select">
+                  <option value="moon">Moon (3.7 m/s²)</option>
+                  <option value="earth" selected>Earth (9.8 m/s²)</option>
+                  <option value="heavy">Heavy (16.0 m/s²)</option>
+                  <option value="turbo">Turbo (22.0 m/s²)</option>
+                </select>
+              </div>
+              <div class="field-group">
+                <label class="field-label-block" for="select-friction">Track Surface</label>
+                <select id="select-friction" class="form-select">
+                  <option value="ice">Ice</option>
+                  <option value="polished" selected>Polished</option>
+                  <option value="rubber">Rubber</option>
+                  <option value="grip">High Grip</option>
+                </select>
+              </div>
+            </div>
+
             <div class="field-group">
               <div class="field-header">
                 <label for="input-ball-count">Number of Balls</label>
@@ -214,84 +314,6 @@
                 step="0.1"
                 value="1.0"
               />
-              <div class="preset-row" data-speed-presets>
-                <button type="button" class="seg-btn" data-speed="0.5">0.5x</button>
-                <button type="button" class="seg-btn active" data-speed="1.0">1.0x</button>
-                <button type="button" class="seg-btn" data-speed="1.5">1.5x</button>
-                <button type="button" class="seg-btn" data-speed="2.0">2.0x</button>
-                <button type="button" class="seg-btn" data-speed="3.0">3.0x</button>
-              </div>
-            </div>
-
-            <div class="field-group">
-              <div class="field-header">
-                <label>Finish-Line Distance</label>
-                <span id="val-distance" class="field-readout mono">100 m</span>
-              </div>
-              <div class="preset-row" id="distance-presets">
-                <button type="button" class="seg-btn" data-dist="50">Short 50m</button>
-                <button type="button" class="seg-btn active" data-dist="100">Med 100m</button>
-                <button type="button" class="seg-btn" data-dist="200">Long 200m</button>
-                <button type="button" class="seg-btn" data-dist="custom">Custom</button>
-              </div>
-              <div id="custom-distance-wrap" class="custom-inline hidden">
-                <label for="input-custom-distance">Custom metres (30–350):</label>
-                <input
-                  id="input-custom-distance"
-                  type="number"
-                  min="30"
-                  max="350"
-                  step="5"
-                  value="120"
-                  class="num-input mono"
-                />
-              </div>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label-block">Colour Darkness</label>
-              <div class="preset-row" id="darkness-presets">
-                <button type="button" class="seg-btn active" data-darkness="standard">Standard</button>
-                <button type="button" class="seg-btn" data-darkness="deep">Deep</button>
-                <button type="button" class="seg-btn" data-darkness="ultra">Ultra Dark</button>
-              </div>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label-block">World Territory</label>
-              <div class="grid-3-btns" id="map-preset-group">
-                <button type="button" class="seg-btn span-3 active" data-map="expedition">All Territories</button>
-                <button type="button" class="seg-btn" data-map="alpine">Alpine</button>
-                <button type="button" class="seg-btn" data-map="canyon">Red Canyon</button>
-                <button type="button" class="seg-btn" data-map="coastal">Coastal</button>
-                <button type="button" class="seg-btn" data-map="arctic">Nordic Fjord</button>
-                <button type="button" class="seg-btn" data-map="savanna">Savanna</button>
-                <button type="button" class="seg-btn" data-map="volcanic">Volcanic</button>
-                <button type="button" class="seg-btn" data-map="bamboo">Highlands</button>
-                <button type="button" class="seg-btn" data-map="badlands">Golden Dunes</button>
-                <button type="button" class="seg-btn" data-map="autumn">Autumn Woods</button>
-              </div>
-              <label class="checkbox-label" for="input-cycle-map">
-                <input id="input-cycle-map" type="checkbox" checked />
-                <span>Rotate territory on Generate New Track</span>
-              </label>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label-block">Track Layout</label>
-              <div class="grid-2-btns" id="track-type-group">
-                <button type="button" class="seg-btn active" data-track="straight">Straight</button>
-                <button type="button" class="seg-btn" data-track="curved">Curved</button>
-                <button type="button" class="seg-btn" data-track="spiral">Spiral</button>
-                <button type="button" class="seg-btn" data-track="multilane">Multi-Lane</button>
-                <button type="button" class="seg-btn" data-track="zigzag">Zig-Zag</button>
-                <button type="button" class="seg-btn" data-track="rollercoaster">Drop &amp; Wave</button>
-                <button type="button" class="seg-btn" data-track="chicane">Chicanes</button>
-                <button type="button" class="seg-btn" data-track="split">Split Track</button>
-                <button type="button" class="seg-btn span-2" data-track="mixed">
-                  Mixed Obstacle Course
-                </button>
-              </div>
             </div>
 
             <div class="field-group">
@@ -309,30 +331,10 @@
               />
             </div>
 
-            <div class="field-group">
-              <label class="field-label-block">Gravity Preset</label>
-              <div class="preset-row" id="gravity-presets">
-                <button type="button" class="seg-btn" data-gravity="moon">Moon</button>
-                <button type="button" class="seg-btn active" data-gravity="earth">Earth</button>
-                <button type="button" class="seg-btn" data-gravity="heavy">Heavy</button>
-                <button type="button" class="seg-btn" data-gravity="turbo">Turbo</button>
-              </div>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label-block">Surface Friction Preset</label>
-              <div class="preset-row" id="friction-presets">
-                <button type="button" class="seg-btn" data-friction="ice">Ice</button>
-                <button type="button" class="seg-btn active" data-friction="polished">Polished</button>
-                <button type="button" class="seg-btn" data-friction="rubber">Rubber</button>
-                <button type="button" class="seg-btn" data-friction="grip">High Grip</button>
-              </div>
-            </div>
-
             <div class="field-group toggle-row">
               <label class="checkbox-label" for="input-experimental-variance">
                 <input id="input-experimental-variance" type="checkbox" />
-                <span>Experimental: Per-ball mass &amp; bounce variance</span>
+                <span>Per-ball mass &amp; bounce variance</span>
               </label>
             </div>
           </section>
@@ -367,12 +369,12 @@
             </div>
 
             <div class="field-group">
-              <label class="field-label-block">Hurdle Size</label>
-              <div class="preset-row" id="hurdle-size-group">
-                <button type="button" class="seg-btn" data-size="small">Small</button>
-                <button type="button" class="seg-btn active" data-size="medium">Medium</button>
-                <button type="button" class="seg-btn" data-size="large">Large</button>
-              </div>
+              <label class="field-label-block" for="select-hurdle-size">Hurdle Size</label>
+              <select id="select-hurdle-size" class="form-select">
+                <option value="small">Small</option>
+                <option value="medium" selected>Medium</option>
+                <option value="large">Large</option>
+              </select>
             </div>
 
             <div class="field-group toggle-row">
@@ -424,18 +426,18 @@
             </div>
           </section>
 
-          <!-- TAB 3: BALLS & COLOURS -->
+          <!-- TAB 3: BALLS & AUDIO -->
           <section id="tab-balls" class="tab-panel">
             <div class="field-group">
-              <label class="field-label-block">Colour Presets</label>
-              <div class="grid-2-btns" id="color-presets-group">
-                <button type="button" class="seg-btn active" data-palette="grandprix">Grand Prix</button>
-                <button type="button" class="seg-btn" data-palette="mineral">Mineral Stone</button>
-                <button type="button" class="seg-btn" data-palette="contrast">High Contrast</button>
-                <button type="button" class="seg-btn" data-palette="pastel">Ceramic Glaze</button>
-                <button type="button" class="seg-btn" data-palette="steel">Brushed Metals</button>
-                <button type="button" class="seg-btn" data-palette="ultradark">Ultra Dark</button>
-              </div>
+              <label class="field-label-block" for="select-palette">Ball Colour Palette</label>
+              <select id="select-palette" class="form-select">
+                <option value="grandprix" selected>Grand Prix</option>
+                <option value="mineral">Mineral Stone</option>
+                <option value="contrast">High Contrast</option>
+                <option value="pastel">Ceramic Glaze</option>
+                <option value="steel">Brushed Metals</option>
+                <option value="ultradark">Ultra Dark</option>
+              </select>
             </div>
 
             <div class="field-group ball-tools-row">
@@ -444,16 +446,24 @@
               </button>
             </div>
 
-            <div class="field-group toggle-row">
+            <div class="field-group checkbox-stack">
               <label class="checkbox-label" for="input-allow-duplicates">
                 <input id="input-allow-duplicates" type="checkbox" />
                 <span>Allow duplicate ball colours</span>
+              </label>
+              <label class="checkbox-label" for="input-music-enabled">
+                <input id="input-music-enabled" type="checkbox" checked />
+                <span>Relaxing background music</span>
+              </label>
+              <label class="checkbox-label" for="input-sound-enabled">
+                <input id="input-sound-enabled" type="checkbox" checked />
+                <span>Collision &amp; rolling sound effects</span>
               </label>
             </div>
 
             <div class="field-group">
               <div class="field-header">
-                <label>Individual Ball Selection</label>
+                <label>Individual Ball Colours</label>
                 <span id="ball-count-caption" class="field-readout mono">10 balls</span>
               </div>
               <div id="ball-list-container" class="ball-list"></div>
@@ -466,15 +476,15 @@
             Generate New Track
           </button>
           <button id="btn-reset-settings" class="btn btn-ghost" type="button">
-            Reset Settings
+            Reset
           </button>
         </div>
       </aside>
 
-      <!-- Right Live Leaderboard Panel -->
+      <!-- Right Compact Live Standings -->
       <aside id="leaderboard-panel" aria-label="Live Race Standings">
         <div class="leaderboard-header">
-          <span class="leaderboard-title">Live Standings</span>
+          <span class="leaderboard-title">Standings</span>
           <button id="btn-toggle-leaderboard" class="link-btn" type="button">Hide</button>
         </div>
         <div id="leaderboard-list" class="leaderboard-list"></div>
@@ -490,8 +500,6 @@
           <kbd class="kbd">Scroll</kbd> Zoom
           <span class="hint-sep">·</span>
           <kbd class="kbd">WASD</kbd> / <kbd class="kbd">QE</kbd> Fly
-          <span class="hint-sep">·</span>
-          <kbd class="kbd">Shift</kbd> Fast
         </span>
         <div class="free-cam-actions">
           <button id="btn-free-focus-leader" class="cam-btn" type="button">Snap to Pack</button>
@@ -499,26 +507,30 @@
         </div>
       </div>
 
-      <!-- Bottom Camera Mode & Simulation Dock -->
+      <!-- Compact Bottom Camera Selector Dock -->
       <div id="camera-dock" aria-label="Camera Mode Controls">
         <div class="camera-dock-inner">
-          <span class="dock-label">Camera</span>
-          <div class="camera-modes-row" id="camera-mode-buttons">
-            <button type="button" class="cam-btn active" data-cam="overview">Overview</button>
-            <button type="button" class="cam-btn" data-cam="director">Broadcast</button>
-            <button type="button" class="cam-btn" data-cam="leader">Follow Leader</button>
-            <button type="button" class="cam-btn" data-cam="topdown">Top-Down</button>
-            <button type="button" class="cam-btn" data-cam="finish">Finish Line</button>
-            <button type="button" class="cam-btn" data-cam="free">Free Roam</button>
-          </div>
-          <button
-            id="btn-cycle-shot"
-            class="cam-btn hidden"
-            type="button"
-            title="Cycle Follow-Up Camera Angle (C)"
+          <label class="dock-label" for="select-camera-mode">Camera</label>
+          <select id="select-camera-mode" class="form-select form-select-compact">
+            <option value="overview" selected>Overview</option>
+            <option value="director">Broadcast Director</option>
+            <option value="leader">Follow Leader</option>
+            <option value="topdown">Top-Down Full Track</option>
+            <option value="finish">Finish &amp; Podium</option>
+            <option value="free">Free Roam</option>
+          </select>
+
+          <select
+            id="select-follow-angle"
+            class="form-select form-select-compact hidden"
+            aria-label="Follow Leader Angle"
           >
-            Angle: Chase
-          </button>
+            <option value="0">Angle: Chase</option>
+            <option value="1">Angle: Low Bumper</option>
+            <option value="2">Angle: Side Drone</option>
+            <option value="3">Angle: Reverse Cam</option>
+          </select>
+
           <span id="camera-shot-label" class="camera-shot-tag hidden">Wide Dolly</span>
           <button id="btn-hide-hud" class="cam-btn cam-btn-subtle" type="button" title="Toggle HUD (H)">
             Hide HUD
@@ -561,32 +573,24 @@
           </div>
 
           <div class="replay-ctrl-group">
-            <span class="dock-label">Speed</span>
-            <div id="replay-speed-group" class="replay-speed-group">
-              <button type="button" class="cam-btn" data-rspeed="0.5">0.5x</button>
-              <button type="button" class="cam-btn active" data-rspeed="1">1x</button>
-              <button type="button" class="cam-btn" data-rspeed="1.5">1.5x</button>
-              <button type="button" class="cam-btn" data-rspeed="2">2x</button>
-            </div>
+            <label class="dock-label" for="select-replay-speed">Speed</label>
+            <select id="select-replay-speed" class="form-select form-select-compact">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="1.5">1.5x</option>
+              <option value="2">2.0x</option>
+            </select>
           </div>
 
           <div class="replay-ctrl-group">
-            <button
-              id="btn-replay-slowmo"
-              class="cam-btn active"
-              type="button"
-              title="Automatically slow down time during major crashes and photo finishes"
-            >
-              Auto Slow-Mo
-            </button>
-            <button
-              id="btn-replay-autocam"
-              class="cam-btn active"
-              type="button"
-              title="Toggle automatic highlight camera cuts vs manual camera control"
-            >
-              Auto Cuts
-            </button>
+            <label class="replay-check-label" for="input-replay-slowmo">
+              <input id="input-replay-slowmo" type="checkbox" checked />
+              <span>Auto Slow-Mo</span>
+            </label>
+            <label class="replay-check-label" for="input-replay-autocam">
+              <input id="input-replay-autocam" type="checkbox" checked />
+              <span>Auto Cuts</span>
+            </label>
             <button id="btn-replay-exit" class="cam-btn cam-btn-exit" type="button">
               Exit Replay
             </button>
@@ -599,9 +603,9 @@
         Show HUD (H)
       </button>
 
-      <!-- Countdown Overlay (3, 2, 1, GO!) -->
-      <div id="countdown-overlay" class="hidden" aria-live="assertive">
-        <div id="countdown-text" class="countdown-numeral">3</div>
+      <!-- Accessible Screen-Reader Countdown Live Region (visual countdown renders on WebGL canvas so it captures in video) -->
+      <div id="countdown-overlay" class="sr-only" aria-live="assertive">
+        <span id="countdown-text">3</span>
       </div>
 
       <!-- Winner Announcement Toast -->
@@ -622,7 +626,7 @@
           <div class="results-meta mono">
             <span id="results-duration">00:00.00</span>
             <span aria-hidden="true">·</span>
-            <span id="results-track-info">100m Curved</span>
+            <span id="results-track-info">100m Straight</span>
           </div>
         </div>
 
@@ -681,7 +685,7 @@
             Generate New Track
           </button>
           <button id="btn-results-settings" class="btn btn-ghost" type="button">
-            Change Settings
+            Setup
           </button>
         </div>
       </div>

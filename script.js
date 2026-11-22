@@ -113,6 +113,41 @@ const COLOR_DARKNESS_PRESETS = {
   },
 };
 
+const QUALITY_PRESETS = {
+  standard: {
+    label: '1080p Standard',
+    targetLongestEdge: 1920,
+    maxPr: 1.5,
+    shadowSize: 2048,
+    recordMaxWidth: 1920,
+    recordBitrates: [28_000_000, 18_000_000, 12_000_000],
+  },
+  uhd4k: {
+    label: '4K UHD',
+    targetLongestEdge: 3840,
+    maxPr: 4.0,
+    shadowSize: 4096,
+    recordMaxWidth: 3840,
+    recordBitrates: [58_000_000, 40_000_000, 26_000_000, 16_000_000],
+  },
+  uhd8k: {
+    label: '8K Cinema',
+    targetLongestEdge: 5760,
+    maxPr: 6.0,
+    shadowSize: 4096,
+    recordMaxWidth: 3840,
+    recordBitrates: [75_000_000, 52_000_000, 36_000_000, 24_000_000],
+  },
+  master32k: {
+    label: '32K Master',
+    targetLongestEdge: 7680,
+    maxPr: 8.0,
+    shadowSize: 4096,
+    recordMaxWidth: 3840,
+    recordBitrates: [90_000_000, 65_000_000, 45_000_000, 30_000_000, 18_000_000],
+  },
+};
+
 const DEFAULT_CONFIG = {
   ballCount: 10,
   speedMultiplier: 1.0,
@@ -506,14 +541,21 @@ class SoundEngine {
     this.rollOscGain = null;
     this.mediaDest = null;
     this.enabled = true;
+    this.musicEnabled = true;
+    this.musicGain = null;
+    this.musicFilter = null;
+    this.musicDelay = null;
+    this.musicTimer = null;
+    this.musicStarted = false;
+    this.musicBarIdx = 0;
     this.lastClackAt = 0;
     this.lastHurdleAt = 0;
     this.lastWallAt = 0;
     this.lastWhooshAt = 0;
   }
 
-  ensureContext() {
-    if (!this.enabled) return null;
+  ensureContext(forceForMusic = false) {
+    if (!this.enabled && !(forceForMusic && this.musicEnabled)) return null;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return null;
@@ -530,6 +572,30 @@ class SoundEngine {
         this.mediaDest = this.ctx.createMediaStreamDestination();
         this.masterGain.connect(this.mediaDest);
       }
+
+      // Warm low-pass ambient music bus with gentle room echo
+      this.musicGain = this.ctx.createGain();
+      this.musicGain.gain.value = this.musicEnabled ? 0.24 : 0.0001;
+      this.musicFilter = this.ctx.createBiquadFilter();
+      this.musicFilter.type = 'lowpass';
+      this.musicFilter.frequency.value = 920;
+      this.musicFilter.Q.value = 0.5;
+
+      this.musicDelay = this.ctx.createDelay(1.0);
+      this.musicDelay.delayTime.value = 0.38;
+      const delayFeedback = this.ctx.createGain();
+      delayFeedback.gain.value = 0.26;
+      const delayWet = this.ctx.createGain();
+      delayWet.gain.value = 0.32;
+
+      this.musicFilter.connect(this.musicGain);
+      this.musicFilter.connect(this.musicDelay);
+      this.musicDelay.connect(delayFeedback);
+      delayFeedback.connect(this.musicDelay);
+      this.musicDelay.connect(delayWet);
+      delayWet.connect(this.musicGain);
+      this.musicGain.connect(this.masterGain);
+
       this.noiseBuffer = this.createNoiseBuffer(0.14);
       this.loopNoiseBuffer = this.createPinkLoopBuffer(1.6);
       this.initRollingBed();
@@ -537,7 +603,88 @@ class SoundEngine {
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
     }
+    if (this.musicEnabled && !this.musicStarted) {
+      this.startMusic(true);
+    }
     return this.ctx;
+  }
+
+  setMusicEnabled(enabled) {
+    this.musicEnabled = Boolean(enabled);
+    if (this.musicEnabled) {
+      const ctx = this.ensureContext(true);
+      if (ctx && this.musicGain) {
+        this.musicGain.gain.setTargetAtTime(0.24, ctx.currentTime, 0.25);
+      }
+      this.startMusic();
+    } else {
+      if (this.ctx && this.musicGain) {
+        this.musicGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.18);
+      }
+    }
+  }
+
+  startMusic(fromEnsure = false) {
+    if (!this.musicEnabled || this.musicStarted) return;
+    const ctx = fromEnsure ? this.ctx : this.ensureContext(true);
+    if (!ctx || !this.musicFilter || this.musicStarted) return;
+    this.musicStarted = true;
+    this.scheduleMusicBar();
+    if (!this.musicTimer) {
+      this.musicTimer = window.setInterval(() => {
+        if (this.musicEnabled && this.ctx && this.ctx.state === 'running') {
+          this.scheduleMusicBar();
+        }
+      }, 3600);
+    }
+  }
+
+  scheduleMusicBar() {
+    if (!this.ctx || !this.musicFilter || !this.musicEnabled) return;
+    const now = this.ctx.currentTime + 0.05;
+    // Peaceful floating Cmaj9 -> Am9 -> Fmaj9 -> G6 progression
+    const chords = [
+      { pad: [130.81, 246.94, 293.66, 329.63], arp: [523.25, 659.25, 587.33, 783.99] },
+      { pad: [110.0, 220.0, 261.63, 329.63], arp: [493.88, 659.25, 523.25, 587.33] },
+      { pad: [87.31, 174.61, 220.0, 261.63], arp: [440.0, 523.25, 659.25, 587.33] },
+      { pad: [98.0, 196.0, 246.94, 293.66], arp: [392.0, 493.88, 587.33, 659.25] },
+    ];
+    const bar = chords[this.musicBarIdx % chords.length];
+    this.musicBarIdx++;
+
+    // Soft sustained felt-pad voicing
+    for (let i = 0; i < bar.pad.length; i++) {
+      const freq = bar.pad[i];
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = i === 0 ? 'sine' : 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+      const peak = i === 0 ? 0.075 : 0.036;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(peak, now + 0.85);
+      gain.gain.setValueAtTime(peak * 0.88, now + 2.35);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 3.75);
+      osc.connect(gain);
+      gain.connect(this.musicFilter);
+      osc.start(now);
+      osc.stop(now + 3.85);
+    }
+
+    // Gentle acoustic felt-mallet notes spaced smoothly across the bar
+    for (let k = 0; k < bar.arp.length; k++) {
+      const t0 = now + k * 0.88 + 0.18;
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(bar.arp[k], t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.linearRampToValueAtTime(0.034, t0 + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.45);
+      osc.connect(gain);
+      gain.connect(this.musicFilter);
+      osc.start(t0);
+      osc.stop(t0 + 1.52);
+    }
   }
 
   createNoiseBuffer(seconds = 0.14) {
@@ -624,12 +771,13 @@ class SoundEngine {
   }
 
   getAudioTrack() {
-    const ctx = this.ensureContext();
+    const ctx = this.ensureContext(true);
     if (!ctx || !this.mediaDest) return null;
     return this.mediaDest.stream.getAudioTracks()[0] || null;
   }
 
   playTone(freq, duration = 0.12, type = 'sine', gainVal = 0.08, endFreq = null) {
+    if (!this.enabled) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.masterComp) return;
     const now = ctx.currentTime;
@@ -649,6 +797,7 @@ class SoundEngine {
   }
 
   playNoiseBurst(duration = 0.035, centerFreq = 1800, q = 2.5, gainVal = 0.08) {
+    if (!this.enabled) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.noiseBuffer || !this.masterComp) return;
     const now = ctx.currentTime;
@@ -718,6 +867,7 @@ class SoundEngine {
   }
 
   playWhoosh(strength = 0.7) {
+    if (!this.enabled) return;
     const nowMs = performance.now();
     if (nowMs - this.lastWhooshAt < 260) return;
     this.lastWhooshAt = nowMs;
@@ -806,7 +956,7 @@ class SoundEngine {
 }
 
 // ============================================================================
-// Full Gameplay Video Recorder (Direct Zero-Readback GPU Canvas Stream -> MP4 / WebM)
+// Full Gameplay Video Recorder (SSAA GPU Frame Capture -> High-Bitrate MP4/WebM)
 // ============================================================================
 class GameplayRecorder {
   constructor(canvas, soundEngine) {
@@ -818,6 +968,9 @@ class GameplayRecorder {
     this.recorder = null;
     this.chunks = [];
     this.stream = null;
+    this.captureCanvas = null;
+    this.captureCtx = null;
+    this.useCaptureCanvas = false;
     this.mimeType = '';
     this.ext = 'webm';
     this.isRecording = false;
@@ -828,15 +981,18 @@ class GameplayRecorder {
 
   static pickSupportedMimeType() {
     if (typeof MediaRecorder === 'undefined') return null;
-    // Prefer hardware H.264 / fast VP8 so live gameplay stays butter-smooth at 60fps
+    // Prefer H.264 High Profile L5.1 (true 4K) & VP9 over low-profile Baseline avc1.42E01E
     const candidates = [
-      { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' },
+      { mime: 'video/mp4;codecs=avc1.640033,mp4a.40.2', ext: 'mp4' },
+      { mime: 'video/mp4;codecs=avc1.640032,mp4a.40.2', ext: 'mp4' },
+      { mime: 'video/mp4;codecs=avc1.64002A,mp4a.40.2', ext: 'mp4' },
+      { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
+      { mime: 'video/mp4;codecs=avc1.4D4033,mp4a.40.2', ext: 'mp4' },
       { mime: 'video/mp4;codecs=avc1,mp4a.40.2', ext: 'mp4' },
       { mime: 'video/mp4', ext: 'mp4' },
       { mime: 'video/webm;codecs=vp8,opus', ext: 'webm' },
       { mime: 'video/webm;codecs=vp8', ext: 'webm' },
-      { mime: 'video/webm;codecs=vp9,opus', ext: 'webm' },
-      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
       { mime: 'video/webm', ext: 'webm' },
     ];
     for (const c of candidates) {
@@ -854,18 +1010,59 @@ class GameplayRecorder {
   }
 
   captureFrame() {
-    // Direct GPU canvas.captureStream() samples WebGL frames natively with zero CPU readback stall
+    if (!this.isRecording || !this.useCaptureCanvas || !this.captureCtx || !this.sourceCanvas) {
+      return;
+    }
+    this.captureCtx.drawImage(
+      this.sourceCanvas,
+      0,
+      0,
+      this.recordWidth,
+      this.recordHeight
+    );
   }
 
-  start() {
+  start(qualityCfg = QUALITY_PRESETS.master32k) {
     this.discard();
     if (!this.isSupported()) return false;
 
     try {
-      this.recordWidth = this.sourceCanvas.width || 1920;
-      this.recordHeight = this.sourceCanvas.height || 1080;
+      const srcW = Math.max(640, this.sourceCanvas.width || 1920);
+      const srcH = Math.max(360, this.sourceCanvas.height || 1080);
+      const aspect = srcW / srcH;
+      const maxRecW = isSoftwareGl ? 1920 : (qualityCfg?.recordMaxWidth || 3840);
+
+      let targetW = Math.min(srcW, maxRecW);
+      let targetH = Math.round(targetW / aspect);
+      // H.264 & VP9 hardware encoders require even pixel dimensions
+      targetW = Math.max(2, targetW - (targetW % 2));
+      targetH = Math.max(2, targetH - (targetH % 2));
+
+      this.recordWidth = targetW;
+      this.recordHeight = targetH;
       this.recordFps = isSoftwareGl ? 24 : 60;
-      const canvasStream = this.sourceCanvas.captureStream(this.recordFps);
+
+      // Downsample >4K SSAA WebGL backbuffer or odd dimensions via high-quality GPU blit
+      const needsDownsample = srcW !== targetW || srcH !== targetH;
+      this.useCaptureCanvas = needsDownsample;
+
+      let streamSource = this.sourceCanvas;
+      if (this.useCaptureCanvas) {
+        this.captureCanvas = document.createElement('canvas');
+        this.captureCanvas.width = targetW;
+        this.captureCanvas.height = targetH;
+        this.captureCtx = this.captureCanvas.getContext('2d', { alpha: false });
+        if (this.captureCtx) {
+          this.captureCtx.imageSmoothingEnabled = true;
+          this.captureCtx.imageSmoothingQuality = 'high';
+          this.captureCtx.drawImage(this.sourceCanvas, 0, 0, targetW, targetH);
+          streamSource = this.captureCanvas;
+        } else {
+          this.useCaptureCanvas = false;
+        }
+      }
+
+      const canvasStream = streamSource.captureStream(this.recordFps);
       const tracks = [...canvasStream.getVideoTracks()];
       const audioTrack = this.soundEngine.getAudioTrack();
       if (audioTrack) {
@@ -878,13 +1075,19 @@ class GameplayRecorder {
       this.ext = picked?.ext || 'webm';
 
       this.chunks = [];
-      const bitrates = [12_000_000, 8_000_000, 5_000_000];
+      const bitrates = qualityCfg?.recordBitrates || [
+        90_000_000,
+        65_000_000,
+        45_000_000,
+        30_000_000,
+        18_000_000,
+      ];
       let created = null;
       for (const bps of bitrates) {
         try {
           const opts = this.mimeType
-            ? { mimeType: this.mimeType, videoBitsPerSecond: bps }
-            : { videoBitsPerSecond: bps };
+            ? { mimeType: this.mimeType, videoBitsPerSecond: bps, audioBitsPerSecond: 192_000 }
+            : { videoBitsPerSecond: bps, audioBitsPerSecond: 192_000 };
           created = new MediaRecorder(this.stream, opts);
           break;
         } catch {
@@ -906,6 +1109,7 @@ class GameplayRecorder {
       return true;
     } catch (err) {
       console.warn('Video recording unavailable:', err);
+      this.cleanupTracks();
       this.isRecording = false;
       return false;
     }
@@ -987,6 +1191,9 @@ class GameplayRecorder {
       this.stream.getVideoTracks().forEach((t) => t.stop());
       this.stream = null;
     }
+    this.useCaptureCanvas = false;
+    this.captureCtx = null;
+    this.captureCanvas = null;
   }
 
   discard() {
@@ -1369,190 +1576,6 @@ class ReplaySystem {
 }
 
 // ============================================================================
-// Zero-GC Subtle Slipstream Wake Ribbons (Normal Blending)
-// ============================================================================
-class BallTrailRenderer {
-  constructor(scene, maxBalls = 50, pointsPerBall = 10) {
-    this.maxBalls = maxBalls;
-    this.pointsPerBall = pointsPerBall;
-    const quadsPerBall = pointsPerBall - 1;
-    const totalVerts = maxBalls * quadsPerBall * 6;
-
-    this.positions = new Float32Array(totalVerts * 3);
-    this.colors = new Float32Array(totalVerts * 3);
-
-    this.geo = new THREE.BufferGeometry();
-    this.geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    this.geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
-
-    const mat = new THREE.MeshBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      opacity: 0.16,
-      blending: THREE.NormalBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-
-    this.mesh = new THREE.Mesh(this.geo, mat);
-    this.mesh.frustumCulled = false;
-    scene.add(this.mesh);
-
-    this.pool = Array.from({ length: maxBalls }, () =>
-      Array.from({ length: pointsPerBall }, () => new THREE.Vector3())
-    );
-    this.counts = new Uint8Array(maxBalls);
-    this._color = new THREE.Color();
-    this._tintTarget = new THREE.Color(0xdcd6c8);
-    this._side = new THREE.Vector3();
-    this._dir = new THREE.Vector3();
-  }
-
-  reset() {
-    this.counts.fill(0);
-    this.positions.fill(0);
-    this.colors.fill(0);
-    this.geo.attributes.position.needsUpdate = true;
-    this.geo.attributes.color.needsUpdate = true;
-  }
-
-  update(balls, cameraPos) {
-    let vIdx = 0;
-    const P = this.pointsPerBall;
-    const quads = P - 1;
-
-    for (let b = 0; b < this.maxBalls; b++) {
-      const ball = balls[b];
-      const buf = this.pool[b];
-      let nPts = this.counts[b];
-
-      if (!ball) {
-        nPts = 0;
-        this.counts[b] = 0;
-      } else if (ball.currentSpeed >= 5.0) {
-        if (nPts === 0) {
-          buf[0].copy(ball.worldPos);
-          nPts = 1;
-        } else {
-          const last = buf[nPts - 1];
-          if (last.distanceToSquared(ball.worldPos) > 0.1) {
-            if (nPts < P) {
-              buf[nPts].copy(ball.worldPos);
-              nPts++;
-            } else {
-              for (let k = 0; k < P - 1; k++) {
-                buf[k].copy(buf[k + 1]);
-              }
-              buf[P - 1].copy(ball.worldPos);
-            }
-          } else {
-            last.copy(ball.worldPos);
-          }
-        }
-        this.counts[b] = nPts;
-      } else if (nPts > 0 && ball.currentSpeed < 2.5) {
-        for (let k = 0; k < nPts - 1; k++) {
-          buf[k].copy(buf[k + 1]);
-        }
-        nPts--;
-        this.counts[b] = nPts;
-      }
-
-      if (!ball || nPts < 2) {
-        for (let q = 0; q < quads * 6; q++) {
-          const base = vIdx * 3;
-          this.positions[base] = 0;
-          this.positions[base + 1] = 0;
-          this.positions[base + 2] = 0;
-          this.colors[base] = 0;
-          this.colors[base + 1] = 0;
-          this.colors[base + 2] = 0;
-          vIdx++;
-        }
-        continue;
-      }
-
-      this._color.set(ball.color).lerp(this._tintTarget, 0.78);
-      const speedFade = Math.min(1, Math.max(0, (ball.currentSpeed - 6.0) / 14));
-      const baseHalfW = BALL_RADIUS * (0.22 + speedFade * 0.2);
-
-      for (let q = 0; q < quads; q++) {
-        if (q >= nPts - 1) {
-          for (let k = 0; k < 6; k++) {
-            const base = vIdx * 3;
-            this.positions[base] = 0;
-            this.positions[base + 1] = 0;
-            this.positions[base + 2] = 0;
-            this.colors[base] = 0;
-            this.colors[base + 1] = 0;
-            this.colors[base + 2] = 0;
-            vIdx++;
-          }
-          continue;
-        }
-
-        const p0 = buf[q];
-        const p1 = buf[q + 1];
-        const t0 = q / (nPts - 1);
-        const t1 = (q + 1) / (nPts - 1);
-        const w0 = baseHalfW * t0;
-        const w1 = baseHalfW * t1;
-
-        this._dir.subVectors(p1, p0);
-        if (this._dir.lengthSq() < 1e-6) this._dir.set(0, 0, -1);
-        this._side.subVectors(cameraPos, p1).cross(this._dir);
-        if (this._side.lengthSq() < 1e-6) this._side.set(1, 0, 0);
-        this._side.normalize();
-
-        const b0 = t0 * t0 * speedFade;
-        const b1 = t1 * t1 * speedFade;
-        const r0 = this._color.r * (0.65 + 0.35 * b0);
-        const g0 = this._color.g * (0.65 + 0.35 * b0);
-        const bl0 = this._color.b * (0.65 + 0.35 * b0);
-        const r1 = this._color.r * (0.65 + 0.35 * b1);
-        const g1 = this._color.g * (0.65 + 0.35 * b1);
-        const bl1 = this._color.b * (0.65 + 0.35 * b1);
-
-        const ax = p0.x - this._side.x * w0;
-        const ay = p0.y - this._side.y * w0;
-        const az = p0.z - this._side.z * w0;
-        const bx = p0.x + this._side.x * w0;
-        const by = p0.y + this._side.y * w0;
-        const bz = p0.z + this._side.z * w0;
-        const cx = p1.x + this._side.x * w1;
-        const cy = p1.y + this._side.y * w1;
-        const cz = p1.z + this._side.z * w1;
-        const dx = p1.x - this._side.x * w1;
-        const dy = p1.y - this._side.y * w1;
-        const dz = p1.z - this._side.z * w1;
-
-        const pts = [
-          [ax, ay, az, r0, g0, bl0],
-          [bx, by, bz, r0, g0, bl0],
-          [cx, cy, cz, r1, g1, bl1],
-          [ax, ay, az, r0, g0, bl0],
-          [cx, cy, cz, r1, g1, bl1],
-          [dx, dy, dz, r1, g1, bl1],
-        ];
-        for (let k = 0; k < 6; k++) {
-          const base = vIdx * 3;
-          this.positions[base] = pts[k][0];
-          this.positions[base + 1] = pts[k][1];
-          this.positions[base + 2] = pts[k][2];
-          this.colors[base] = pts[k][3];
-          this.colors[base + 1] = pts[k][4];
-          this.colors[base + 2] = pts[k][5];
-          vIdx++;
-        }
-      }
-    }
-
-    this.geo.attributes.position.needsUpdate = true;
-    this.geo.attributes.color.needsUpdate = true;
-  }
-}
-
-// ============================================================================
 // Colour Utilities
 // ============================================================================
 function hslToHex(h, s, l) {
@@ -1621,7 +1644,8 @@ function buildBallColorsForPalette(paletteKey, count, allowDuplicates) {
 // High-Res Procedural PBR Textures (Zero External Assets, Realistic Surfaces)
 // ============================================================================
 function createTrackSurfaceTexture(maxAnisotropy, mapCfg, trackMul = 1.0) {
-  const S = 1024;
+  const S = isSoftwareGl ? 1024 : 2048;
+  const k = S / 1024;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
@@ -1640,30 +1664,31 @@ function createTrackSurfaceTexture(maxAnisotropy, mapCfg, trackMul = 1.0) {
   ctx.fillStyle = groove;
   ctx.fillRect(0, 0, S, S);
 
-  // Smooth aggregate asphalt & stone micro-grain (noise-free in motion)
-  for (let i = 0; i < 4200; i++) {
+  // Fine aggregate asphalt & stone micro-grain (sharp at 4K/8K, noise-free in motion)
+  const grainCount = isSoftwareGl ? 4200 : 12000;
+  for (let i = 0; i < grainCount; i++) {
     const x = Math.random() * S;
     const y = Math.random() * S;
-    const alpha = 0.015 + Math.random() * 0.025;
+    const alpha = 0.014 + Math.random() * 0.022;
     ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${alpha})` : `rgba(0,0,0,${alpha * 1.2})`;
-    ctx.fillRect(x, y, 3, 3);
+    ctx.fillRect(x, y, 2 * k, 2 * k);
   }
 
-  // Subtle concrete/asphalt expansion seams
+  // Crisp concrete/asphalt expansion seams
   ctx.fillStyle = 'rgba(0, 0, 0, 0.24)';
-  for (let y = 0; y < S; y += 256) {
-    ctx.fillRect(0, y, S, 3);
+  for (let y = 0; y < S; y += 256 * k) {
+    ctx.fillRect(0, y, S, 3 * k);
   }
 
-  // Crisp painted motorsport white shoulder lines
+  // Razor-sharp painted motorsport shoulder lines
   ctx.fillStyle = mapCfg?.trackLine || 'rgba(238, 235, 228, 0.78)';
-  ctx.fillRect(26, 0, 12, S);
-  ctx.fillRect(S - 38, 0, 12, S);
+  ctx.fillRect(26 * k, 0, 12 * k, S);
+  ctx.fillRect(S - 38 * k, 0, 12 * k, S);
 
-  // Subtle center lane guide dashes
+  // Crisp center lane guide dashes
   ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-  for (let y = 32; y < S; y += 128) {
-    ctx.fillRect(S * 0.5 - 4, y, 8, 56);
+  for (let y = 32 * k; y < S; y += 128 * k) {
+    ctx.fillRect(S * 0.5 - 4 * k, y, 8 * k, 56 * k);
   }
 
   const tex = new THREE.CanvasTexture(canvas);
@@ -1675,10 +1700,11 @@ function createTrackSurfaceTexture(maxAnisotropy, mapCfg, trackMul = 1.0) {
 }
 
 function createTrackNormalTexture(maxAnisotropy) {
-  const S = 512;
+  const S = isSoftwareGl ? 512 : 1024;
+  const seamMod = S / 4;
   const h = new Float32Array(S * S);
   for (let y = 0; y < S; y++) {
-    const seam = y % 128 < 2 ? -0.32 : 0;
+    const seam = y % seamMod < 3 ? -0.32 : 0;
     for (let x = 0; x < S; x++) {
       const weave =
         Math.sin(x * 0.28) * Math.cos(y * 0.28) * 0.05 + (Math.random() - 0.5) * 0.035;
@@ -1723,7 +1749,7 @@ function createTrackNormalTexture(maxAnisotropy) {
 }
 
 function createTrackRoughnessTexture(maxAnisotropy) {
-  const S = 512;
+  const S = isSoftwareGl ? 512 : 1024;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
@@ -1739,7 +1765,7 @@ function createTrackRoughnessTexture(maxAnisotropy) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, S, S);
 
-  for (let i = 0; i < 2200; i++) {
+  for (let i = 0; i < (isSoftwareGl ? 2200 : 5200); i++) {
     const v = 100 + Math.floor(Math.random() * 55);
     ctx.fillStyle = `rgba(${v},${v},${v},0.06)`;
     ctx.fillRect(Math.random() * S, Math.random() * S, 3, 3);
@@ -1753,8 +1779,9 @@ function createTrackRoughnessTexture(maxAnisotropy) {
 }
 
 function createSkyDomeTexture(skyStops = ['#2864a8', '#5b93cd', '#a8cce6', '#dde8ee'], skyMul = 1.0) {
-  const W = 1024;
-  const H = 512;
+  const W = isSoftwareGl ? 1024 : 2048;
+  const H = isSoftwareGl ? 512 : 1024;
+  const k = W / 1024;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -1774,8 +1801,8 @@ function createSkyDomeTexture(skyStops = ['#2864a8', '#5b93cd', '#a8cce6', '#dde
   for (let i = 0; i < 65; i++) {
     const cx = cloudRng() * W;
     const cy = H * (0.18 + cloudRng() * 0.25);
-    const rx = 38 + cloudRng() * 110;
-    const ry = 8 + cloudRng() * 20;
+    const rx = (38 + cloudRng() * 110) * k;
+    const ry = (8 + cloudRng() * 20) * k;
     const alpha = (0.05 + cloudRng() * 0.11) * cloudBright;
     const cg = ctx.createRadialGradient(cx, cy, rx * 0.1, cx, cy, rx);
     cg.addColorStop(0.0, `rgba(255, 253, 248, ${alpha})`);
@@ -1799,46 +1826,48 @@ function createSkyDomeTexture(skyStops = ['#2864a8', '#5b93cd', '#a8cce6', '#dde
 }
 
 function createBallMarbleTexture(maxAnisotropy) {
-  const W = 1024;
-  const H = 512;
+  const S = isSoftwareGl ? 512 : 1024;
   const canvas = document.createElement('canvas');
-  canvas.width = W;
-  canvas.height = H;
+  canvas.width = S;
+  canvas.height = S;
   const ctx = canvas.getContext('2d');
 
-  // Pure clean high-chroma base so every selected marble colour shines at full depth
+  // Clean, uniform high-chroma surface with subtle organic micro-sheen (zero circular lines/rings)
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0, 0, S, S);
 
-  // Delicate translucent glass swirl ribbons (keeps pigment pure)
-  for (let i = 0; i < 8; i++) {
-    ctx.strokeStyle = i % 2 === 0 ? 'rgba(255, 255, 255, 0.24)' : 'rgba(0, 0, 0, 0.16)';
-    ctx.lineWidth = 6 + (i % 3) * 3;
+  const rng = mulberry32(9187);
+  for (let i = 0; i < 180; i++) {
+    const cx = rng() * S;
+    const cy = rng() * S;
+    const r = (18 + rng() * 52) * (S / 512);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, 'rgba(255, 255, 255, 0.045)');
+    g.addColorStop(1, 'rgba(235, 235, 235, 0.0)');
+    ctx.fillStyle = g;
     ctx.beginPath();
-    const y0 = 36 + i * 54;
-    ctx.moveTo(0, y0);
-    ctx.bezierCurveTo(W * 0.33, y0 + 44, W * 0.66, y0 - 44, W, y0);
-    ctx.stroke();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
   }
-
-  // Crisp subtle equator spin band + fine pin-stripes for reading rotation without muting hue
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
-  ctx.fillRect(0, H * 0.47, W, H * 0.06);
-
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
-  ctx.fillRect(0, H * 0.494, W, 5);
-
-  // Opposite pole markers for rotational spin reading
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.26)';
-  ctx.beginPath();
-  ctx.arc(W * 0.25, H * 0.21, 28, 0, Math.PI * 2);
-  ctx.arc(W * 0.75, H * 0.79, 28, 0, Math.PI * 2);
-  ctx.fill();
 
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.anisotropy = maxAnisotropy;
   return tex;
+}
+
+const _richHslTmp = { h: 0, s: 0, l: 0 };
+function setRichMarbleColor(targetColor, hex) {
+  targetColor.set(hex);
+  targetColor.getHSL(_richHslTmp);
+  if (_richHslTmp.s > 0.08) {
+    _richHslTmp.s = Math.min(1.0, _richHslTmp.s * 1.18);
+  }
+  _richHslTmp.l = Math.max(0.12, Math.min(0.74, _richHslTmp.l * 0.78));
+  targetColor.setHSL(_richHslTmp.h, _richHslTmp.s, _richHslTmp.l);
+  return targetColor;
 }
 
 function createBoosterTexture(maxAnisotropy) {
@@ -1847,16 +1876,16 @@ function createBoosterTexture(maxAnisotropy) {
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
 
-  // Industrial dark brushed steel plate with painted ochre/amber launch chevrons
-  ctx.fillStyle = '#2d3136';
+  // Industrial dark brushed steel plate with muted anodized bronze chevrons
+  ctx.fillStyle = '#25292e';
   ctx.fillRect(0, 0, 256, 512);
 
-  ctx.fillStyle = '#d9821e';
-  ctx.fillRect(6, 0, 14, 512);
-  ctx.fillRect(236, 0, 14, 512);
+  ctx.fillStyle = '#9c6b35';
+  ctx.fillRect(6, 0, 12, 512);
+  ctx.fillRect(238, 0, 12, 512);
 
-  ctx.strokeStyle = '#e8a23a';
-  ctx.lineWidth = 18;
+  ctx.strokeStyle = '#b98344';
+  ctx.lineWidth = 16;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   for (let y = 40; y < 512; y += 128) {
@@ -1877,18 +1906,20 @@ function createBoosterTexture(maxAnisotropy) {
 }
 
 function createRumbleCurbTexture(maxAnisotropy, primary = '#c63d2d', secondary = '#eae5dc') {
+  const W = isSoftwareGl ? 128 : 256;
+  const H = isSoftwareGl ? 512 : 1024;
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 512;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
-  const segH = 64;
-  for (let y = 0; y < 512; y += segH) {
-    ctx.fillStyle = (y / segH) % 2 === 0 ? primary : secondary;
-    ctx.fillRect(0, y, 128, segH);
+  const segH = H / 8;
+  for (let y = 0; y < H; y += segH) {
+    ctx.fillStyle = Math.round(y / segH) % 2 === 0 ? primary : secondary;
+    ctx.fillRect(0, y, W, segH);
   }
   ctx.fillStyle = 'rgba(0, 0, 0, 0.14)';
-  for (let i = 0; i < 500; i++) {
-    ctx.fillRect(Math.random() * 128, Math.random() * 512, 2, 2);
+  for (let i = 0; i < 900; i++) {
+    ctx.fillRect(Math.random() * W, Math.random() * H, 2, 2);
   }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -1899,24 +1930,26 @@ function createRumbleCurbTexture(maxAnisotropy, primary = '#c63d2d', secondary =
 }
 
 function createSoftRadialTexture() {
+  const S = isSoftwareGl ? 128 : 256;
+  const half = S * 0.5;
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = S;
+  canvas.height = S;
   const ctx = canvas.getContext('2d');
-  const grad = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
+  const grad = ctx.createRadialGradient(half, half, 2, half, half, half - 2);
   grad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
   grad.addColorStop(0.42, 'rgba(255, 255, 255, 0.55)');
   grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 128, 128);
+  ctx.fillRect(0, 0, S, S);
   const tex = new THREE.CanvasTexture(canvas);
   return tex;
 }
 
 function createCheckeredTexture(maxAnisotropy, cols = 12, rows = 4) {
   const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 340;
+  canvas.width = isSoftwareGl ? 1024 : 2048;
+  canvas.height = isSoftwareGl ? 340 : 680;
   const ctx = canvas.getContext('2d');
   const cw = canvas.width / cols;
   const ch = canvas.height / rows;
@@ -1933,19 +1966,21 @@ function createCheckeredTexture(maxAnisotropy, cols = 12, rows = 4) {
 }
 
 function createHazardStripeTexture(maxAnisotropy) {
+  const S = isSoftwareGl ? 512 : 1024;
+  const k = S / 512;
   const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 512;
+  canvas.width = S;
+  canvas.height = S;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#d9821e';
-  ctx.fillRect(0, 0, 512, 512);
+  ctx.fillRect(0, 0, S, S);
   ctx.fillStyle = '#1f2226';
-  for (let i = -512; i < 1024; i += 96) {
+  for (let i = -S; i < S * 2; i += 96 * k) {
     ctx.beginPath();
     ctx.moveTo(i, 0);
-    ctx.lineTo(i + 48, 0);
-    ctx.lineTo(i + 560, 512);
-    ctx.lineTo(i + 512, 512);
+    ctx.lineTo(i + 48 * k, 0);
+    ctx.lineTo(i + 560 * k, S);
+    ctx.lineTo(i + 512 * k, S);
     ctx.closePath();
     ctx.fill();
   }
@@ -1959,7 +1994,7 @@ function createHazardStripeTexture(maxAnisotropy) {
 
 function createArenaFloorTexture(maxAnisotropy) {
   // Neutral natural mineral/soil micro-detail texture multiplied cleanly by vertex colors
-  const S = 512;
+  const S = isSoftwareGl ? 512 : 1024;
   const canvas = document.createElement('canvas');
   canvas.width = S;
   canvas.height = S;
@@ -1967,7 +2002,7 @@ function createArenaFloorTexture(maxAnisotropy) {
   ctx.fillStyle = '#e5e3dc';
   ctx.fillRect(0, 0, S, S);
 
-  for (let i = 0; i < 14000; i++) {
+  for (let i = 0; i < (isSoftwareGl ? 14000 : 28000); i++) {
     const a = 0.03 + Math.random() * 0.07;
     ctx.fillStyle = Math.random() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(25,22,18,${a})`;
     const sz = 1 + Math.floor(Math.random() * 3);
@@ -1984,20 +2019,23 @@ function createArenaFloorTexture(maxAnisotropy) {
 }
 
 function createSignCanvasTexture(text, bgColor = '#1e201d', fgColor = '#d97724') {
+  const W = isSoftwareGl ? 512 : 1024;
+  const H = isSoftwareGl ? 256 : 512;
+  const k = W / 256;
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 128;
+  canvas.width = W;
+  canvas.height = H;
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, 256, 128);
+  ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = fgColor;
-  ctx.lineWidth = 6;
-  ctx.strokeRect(6, 6, 244, 116);
+  ctx.lineWidth = 6 * k;
+  ctx.strokeRect(6 * k, 6 * k, 244 * k, 116 * k);
   ctx.fillStyle = '#f3f2ee';
-  ctx.font = 'bold 52px "Plus Jakarta Sans", system-ui, sans-serif';
+  ctx.font = `bold ${52 * k}px "Plus Jakarta Sans", system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 66);
+  ctx.fillText(text, W * 0.5, H * 0.5 + 2 * k);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -2308,7 +2346,9 @@ class MarbleRushApp {
     this.resultsDismissed = false;
     this.trackSeed = 0;
     this.recordedVideoInfo = null;
-    this.ultraQuality = !isSoftwareGl;
+    this.qualityPreset = isSoftwareGl ? 'standard' : 'master32k';
+    this.adaptivePrScale = 1.0;
+    this.slowFrameCount = 0;
     this._activeEnvMapKey = null;
 
     // Three.js & Rapier objects
@@ -2326,14 +2366,24 @@ class MarbleRushApp {
     this.hurdleGroup = null;
     this.ballGroup = null;
     this.contactShadowMesh = null;
-    this.trails = null;
     this.waterMesh = null;
+    this.waterUniforms = null;
+    this.physicsDebugEnabled = false;
+    this.physicsDebugMesh = null;
+    this._debugRgbBuffer = new Float32Array(0);
+    this.hudScene = null;
+    this.hudCamera = null;
+    this.countdownMesh = null;
+    this.countdownCanvas = null;
+    this.countdownCtx = null;
+    this.countdownTex = null;
+    this.countdownAnimTime = 0;
 
     this.trackData = null;
     this.balls = [];
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
-    this.checkpointVisuals = [];
+    this.flagMeshes = [];
     this.startGate = null;
     this.startLightPods = [];
     this.podiumSlots = [];
@@ -2401,7 +2451,8 @@ class MarbleRushApp {
       btnRestart: document.getElementById('btn-restart-race'),
       btnCinematicReplay: document.getElementById('btn-cinematic-replay'),
       btnViewResults: document.getElementById('btn-view-results'),
-      btnToggleQuality: document.getElementById('btn-toggle-quality'),
+      selectQuality: document.getElementById('select-quality'),
+      btnToggleMusic: document.getElementById('btn-toggle-music'),
       btnToggleSound: document.getElementById('btn-toggle-sound'),
 
       // Config controls
@@ -2410,31 +2461,21 @@ class MarbleRushApp {
       valBallCount: document.getElementById('val-ball-count'),
       inputBallSpeed: document.getElementById('input-ball-speed'),
       valBallSpeed: document.getElementById('val-ball-speed'),
-      speedPresetRow: document.querySelector('[data-speed-presets]'),
-      valDistance: document.getElementById('val-distance'),
-      distancePresets: document.getElementById('distance-presets'),
       customDistanceWrap: document.getElementById('custom-distance-wrap'),
       inputCustomDistance: document.getElementById('input-custom-distance'),
-      darknessPresets: document.getElementById('darkness-presets'),
-      mapPresetGroup: document.getElementById('map-preset-group'),
       inputCycleMap: document.getElementById('input-cycle-map'),
-      trackTypeGroup: document.getElementById('track-type-group'),
       inputTrackWidth: document.getElementById('input-track-width'),
       valTrackWidth: document.getElementById('val-track-width'),
-      gravityPresets: document.getElementById('gravity-presets'),
-      frictionPresets: document.getElementById('friction-presets'),
       inputExperimentalVariance: document.getElementById('input-experimental-variance'),
 
       inputHurdleCount: document.getElementById('input-hurdle-count'),
       inputHurdleCountNum: document.getElementById('input-hurdle-count-num'),
       valHurdleCount: document.getElementById('val-hurdle-count'),
-      hurdleSizeGroup: document.getElementById('hurdle-size-group'),
       inputRandomHurdles: document.getElementById('input-random-hurdles'),
       obstacleTypesList: document.getElementById('obstacle-types-list'),
       btnObstaclesAll: document.getElementById('btn-obstacles-all'),
       btnObstaclesNone: document.getElementById('btn-obstacles-none'),
 
-      colorPresetsGroup: document.getElementById('color-presets-group'),
       btnRandomizeColors: document.getElementById('btn-randomize-colors'),
       inputAllowDuplicates: document.getElementById('input-allow-duplicates'),
       ballCountCaption: document.getElementById('ball-count-caption'),
@@ -2443,9 +2484,21 @@ class MarbleRushApp {
       btnGenerateTrack: document.getElementById('btn-generate-track'),
       btnResetSettings: document.getElementById('btn-reset-settings'),
 
+      selectMap: document.getElementById('select-map'),
+      selectTrack: document.getElementById('select-track'),
+      selectDistance: document.getElementById('select-distance'),
+      selectDarkness: document.getElementById('select-darkness'),
+      selectGravity: document.getElementById('select-gravity'),
+      selectFriction: document.getElementById('select-friction'),
+      selectHurdleSize: document.getElementById('select-hurdle-size'),
+      selectPalette: document.getElementById('select-palette'),
+      inputMusicEnabled: document.getElementById('input-music-enabled'),
+      inputSoundEnabled: document.getElementById('input-sound-enabled'),
+      btnToggleMusic: document.getElementById('btn-toggle-music'),
+
       cameraDock: document.getElementById('camera-dock'),
-      cameraModeButtons: document.getElementById('camera-mode-buttons'),
-      btnCycleShot: document.getElementById('btn-cycle-shot'),
+      selectCameraMode: document.getElementById('select-camera-mode'),
+      selectFollowAngle: document.getElementById('select-follow-angle'),
       cameraShotLabel: document.getElementById('camera-shot-label'),
       btnHideHud: document.getElementById('btn-hide-hud'),
       btnShowHud: document.getElementById('btn-show-hud'),
@@ -2463,9 +2516,9 @@ class MarbleRushApp {
       btnReplayPlay: document.getElementById('btn-replay-play'),
       btnReplayPrevHl: document.getElementById('btn-replay-prev-hl'),
       btnReplayNextHl: document.getElementById('btn-replay-next-hl'),
-      replaySpeedGroup: document.getElementById('replay-speed-group'),
-      btnReplaySlowmo: document.getElementById('btn-replay-slowmo'),
-      btnReplayAutocam: document.getElementById('btn-replay-autocam'),
+      selectReplaySpeed: document.getElementById('select-replay-speed'),
+      inputReplaySlowmo: document.getElementById('input-replay-slowmo'),
+      inputReplayAutocam: document.getElementById('input-replay-autocam'),
       btnReplayExit: document.getElementById('btn-replay-exit'),
 
       countdownOverlay: document.getElementById('countdown-overlay'),
@@ -2538,15 +2591,22 @@ class MarbleRushApp {
     if (isSoftwareGl) return 1;
     const w = Math.max(1, window.innerWidth || 1280);
     const h = Math.max(1, window.innerHeight || 720);
-    const baseCap = this.ultraQuality ? 1.5 : 1.0;
-    let pr = Math.min(window.devicePixelRatio || 1, baseCap);
+    const qCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const desiredPr = Math.max(
+      window.devicePixelRatio || 1,
+      qCfg.targetLongestEdge / Math.max(w, h)
+    );
+    let pr = Math.min(desiredPr, qCfg.maxPr) * this.adaptivePrScale;
     if (this.renderer) {
       const caps = this.renderer.capabilities;
       const gl = this.renderer.getContext();
       const maxRb = gl ? gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) || 4096 : 4096;
-      const maxDim = Math.min(caps.maxTextureSize || 4096, maxRb, 2560);
-      const maxSafePr = Math.min(maxDim / w, maxDim / h);
-      pr = Math.max(0.5, Math.min(pr, maxSafePr));
+      const maxVp = gl ? gl.getParameter(gl.MAX_VIEWPORT_DIMS) || [4096, 4096] : [4096, 4096];
+      const maxW = Math.min(caps.maxTextureSize || 4096, maxRb, maxVp[0] || 4096, 7680);
+      const maxH = Math.min(caps.maxTextureSize || 4096, maxRb, maxVp[1] || 4096, 4320);
+      const maxPixelBudgetPr = Math.sqrt(33_200_000 / Math.max(1, w * h));
+      const maxSafePr = Math.min(maxW / w, maxH / h, maxPixelBudgetPr);
+      pr = Math.max(0.75, Math.min(pr, maxSafePr));
     }
     return pr;
   }
@@ -2558,14 +2618,15 @@ class MarbleRushApp {
       canvas: this.canvas,
       antialias: !isSoftwareGl,
       powerPreference: 'high-performance',
+      preserveDrawingBuffer: true,
     });
     this.renderer.setSize(w, h);
     this.renderer.setPixelRatio(this.getTargetPixelRatio());
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.0;
+    this.renderer.toneMapping = THREE.NeutralToneMapping ?? THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.88;
     this.renderer.shadowMap.enabled = !isSoftwareGl;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = isSoftwareGl ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0xc2d5e0);
@@ -2601,19 +2662,23 @@ class MarbleRushApp {
     this.hemiLight = new THREE.HemisphereLight(0xd4e8ff, 0x3b352c, 0.94);
     this.scene.add(this.hemiLight);
 
+    const qCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const maxTex = this.renderer.capabilities.maxTextureSize || 4096;
+    const shadowRes = isSoftwareGl ? 1024 : Math.min(qCfg.shadowSize, maxTex);
+
     this.keyLight = new THREE.DirectionalLight(0xfff1d6, 2.85);
     this.keyLight.position.set(42, 72, 34);
     this.keyLight.castShadow = !isSoftwareGl;
-    this.keyLight.shadow.mapSize.set(1024, 1024);
-    const d = 58;
+    this.keyLight.shadow.mapSize.set(shadowRes, shadowRes);
+    const d = 42;
     this.keyLight.shadow.camera.left = -d;
     this.keyLight.shadow.camera.right = d;
     this.keyLight.shadow.camera.top = d;
     this.keyLight.shadow.camera.bottom = -d;
     this.keyLight.shadow.camera.near = 4;
-    this.keyLight.shadow.camera.far = 230;
-    this.keyLight.shadow.bias = -0.0004;
-    this.keyLight.shadow.normalBias = 0.03;
+    this.keyLight.shadow.camera.far = 210;
+    this.keyLight.shadow.bias = -0.00025;
+    this.keyLight.shadow.normalBias = 0.015;
     this.scene.add(this.keyLight);
     this.scene.add(this.keyLight.target);
 
@@ -2628,7 +2693,7 @@ class MarbleRushApp {
     this.scene.add(this.trackGroup, this.hurdleGroup, this.ballGroup);
 
     // Daylight sky dome
-    const skyGeo = new THREE.SphereGeometry(920, 36, 24);
+    const skyGeo = new THREE.SphereGeometry(920, 48, 32);
     const skyMat = new THREE.MeshBasicMaterial({
       map: createSkyDomeTexture(TERRITORIES.expedition.skyStops),
       side: THREE.BackSide,
@@ -2638,8 +2703,27 @@ class MarbleRushApp {
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.scene.add(this.skyDome);
 
-    // Subtle slipstream wake ribbons
-    this.trails = new BallTrailRenderer(this.scene, 50, 10);
+    // WebGL Orthographic Countdown Overlay (captured cleanly inside GameplayRecorder MP4/WebM video)
+    const aspect = w / h;
+    this.hudScene = new THREE.Scene();
+    this.hudCamera = new THREE.OrthographicCamera(-aspect, aspect, 1, -1, 0, 10);
+    this.countdownCanvas = document.createElement('canvas');
+    this.countdownCanvas.width = isSoftwareGl ? 512 : 1536;
+    this.countdownCanvas.height = isSoftwareGl ? 256 : 768;
+    this.countdownCtx = this.countdownCanvas.getContext('2d');
+    this.countdownTex = new THREE.CanvasTexture(this.countdownCanvas);
+    this.countdownTex.colorSpace = THREE.SRGBColorSpace;
+    this.countdownTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    const cdMat = new THREE.MeshBasicMaterial({
+      map: this.countdownTex,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.countdownMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.575), cdMat);
+    this.countdownMesh.position.set(0, 0.08, -1);
+    this.countdownMesh.visible = false;
+    this.hudScene.add(this.countdownMesh);
 
     // Canvas WebGL context safety
     this.canvas.addEventListener('webglcontextlost', (e) => {
@@ -2674,7 +2758,11 @@ class MarbleRushApp {
     this.shared.boosterTex = createBoosterTexture(maxAniso);
     this.shared.softRadialTex = createSoftRadialTexture();
 
-    this.shared.ballGeo = new THREE.SphereGeometry(BALL_RADIUS, 32, 22);
+    this.shared.ballGeo = new THREE.SphereGeometry(
+      BALL_RADIUS,
+      isSoftwareGl ? 28 : 48,
+      isSoftwareGl ? 20 : 36
+    );
 
     // Instanced soft contact shadows directly beneath every marble
     const shadowGeo = new THREE.PlaneGeometry(BALL_RADIUS * 2.4, BALL_RADIUS * 2.4);
@@ -2715,15 +2803,7 @@ class MarbleRushApp {
     );
     iblScene.add(skySphere);
 
-    // Natural outdoor sun disc + subtle terrain ground bounce for glass/ceramic reflections
-    const sunDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(3.5, 24),
-      new THREE.MeshBasicMaterial({ color: mapCfg.keyColor, side: THREE.DoubleSide })
-    );
-    sunDisc.position.set(10, 14, 8);
-    sunDisc.lookAt(0, 0, 0);
-    iblScene.add(sunDisc);
-
+    // Subtle terrain ground bounce for natural reflections without harsh sun hotspot glare
     const groundBounce = new THREE.Mesh(
       new THREE.CircleGeometry(18, 24),
       new THREE.MeshBasicMaterial({
@@ -2744,8 +2824,6 @@ class MarbleRushApp {
     skySphere.material.map.dispose();
     skySphere.geometry.dispose();
     skySphere.material.dispose();
-    sunDisc.geometry.dispose();
-    sunDisc.material.dispose();
     groundBounce.geometry.dispose();
     groundBounce.material.dispose();
     pmrem.dispose();
@@ -2796,16 +2874,24 @@ class MarbleRushApp {
     this.rimLight.color.setHex(mapCfg.rimColor);
     this.rimLight.intensity = mapCfg.rimIntensity * darkCfg.rimMul;
 
-    this.renderer.toneMappingExposure = mapCfg.exposure * darkCfg.exposureMul;
+    this.renderer.toneMappingExposure = mapCfg.exposure * darkCfg.exposureMul * 0.88;
     return { ...mapCfg, _darkCfg: darkCfg };
   }
 
   onResize() {
     const w = Math.max(1, window.innerWidth || 1280);
     const h = Math.max(1, window.innerHeight || 720);
+    const aspect = w / h;
     const pr = this.getTargetPixelRatio();
-    this.camera.aspect = w / h;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
+    if (this.hudCamera) {
+      this.hudCamera.left = -aspect;
+      this.hudCamera.right = aspect;
+      this.hudCamera.top = 1;
+      this.hudCamera.bottom = -1;
+      this.hudCamera.updateProjectionMatrix();
+    }
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
   }
@@ -2858,7 +2944,7 @@ class MarbleRushApp {
     this.dom.replayVideoPlayer.removeAttribute('src');
     this.dom.videoExportPanel.classList.add('hidden');
 
-    if (this.trails) this.trails.reset();
+    if (this.countdownMesh) this.countdownMesh.visible = false;
     if (this.contactShadowMesh) {
       this._dummy.scale.set(0, 0, 0);
       this._dummy.updateMatrix();
@@ -2885,8 +2971,9 @@ class MarbleRushApp {
     this.directorState.liveBallId = 0;
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
-    this.checkpointVisuals = [];
+    this.flagMeshes = [];
     this.waterMesh = null;
+    this.waterUniforms = null;
     this.podiumSlots = [];
     this.startLightPods = [];
     this.balls = [];
@@ -2928,7 +3015,7 @@ class MarbleRushApp {
     this.trackData = buildTrackStations(this.config, this.trackSeed);
     this.buildTrackMeshesAndPhysics(mapCfg);
     this.buildEnvironmentFloorAndSupports(mapCfg);
-    this.buildCheckpoints();
+    this.buildDistanceMarkers();
     this.buildStartGate();
     this.buildFinishArchAndPodium();
     this.buildMultiLaneOrSplitFeatures();
@@ -2952,11 +3039,11 @@ class MarbleRushApp {
     const halfW = this.config.trackWidth / 2;
     const curbW = 0.36;
     const curbH = 0.16;
-    const wallH = 2.15;
-    const wallT = 0.56;
-    const shieldTopY = 3.22;
-    const physShieldMidY = 4.4;
-    const physShieldTopY = 6.2;
+    const wallH = 0.50;
+    const wallT = 0.42;
+    const shieldTopY = 3.55;
+    const physShieldMidY = 4.6;
+    const physShieldTopY = 6.5;
     const deckBottom = -0.68;
 
     const profile = [
@@ -2987,18 +3074,18 @@ class MarbleRushApp {
     const glassIndices = [];
 
     const rightShieldProfile = [
-      [halfW, wallH - 0.15],
+      [halfW, wallH - 0.12],
       [halfW, physShieldMidY],
       [halfW - 0.48, physShieldTopY],
-      [halfW + wallT + 0.14, physShieldTopY],
-      [halfW + wallT + 0.14, wallH - 0.15],
+      [halfW + wallT + 0.16, physShieldTopY],
+      [halfW + wallT + 0.16, wallH - 0.12],
     ];
     const leftShieldProfile = [
-      [-halfW - wallT - 0.14, wallH - 0.15],
-      [-halfW - wallT - 0.14, physShieldTopY],
+      [-halfW - wallT - 0.16, wallH - 0.12],
+      [-halfW - wallT - 0.16, physShieldTopY],
       [-halfW + 0.48, physShieldTopY],
       [-halfW, physShieldMidY],
-      [-halfW, wallH - 0.15],
+      [-halfW, wallH - 0.12],
     ];
     const shieldVertsR = [];
     const shieldIndicesR = [];
@@ -3014,7 +3101,6 @@ class MarbleRushApp {
         const vy = st.pos.y + st.R.y * lx + st.U.y * ly;
         const vz = st.pos.z + st.R.z * lx + st.U.z * ly;
         positions.push(vx, vy, vz);
-        // Deck top vertices (k = 0..2, 9) use exact lane UVs; side/underbody vertices step cleanly to avoid degenerate tangent derivatives
         const uCoord =
           k <= 2 || k === 9
             ? (lx + halfW) / this.config.trackWidth
@@ -3022,7 +3108,7 @@ class MarbleRushApp {
         uvs.push(uCoord, vCoord);
       }
 
-      // Physics containment upper shields (solid watertight walls up to 6.2m with inward catch lip)
+      // Physics containment upper shields (solid watertight walls up to 6.5m with inward catch lip)
       for (let k = 0; k < 5; k++) {
         const [rx, ry] = rightShieldProfile[k];
         shieldVertsR.push(
@@ -3038,12 +3124,12 @@ class MarbleRushApp {
         );
       }
 
-      // Sleek visual clear safety glass extension between wallH and shieldTopY
+      // Crystal-clear tall architectural safety glass rising cleanly from the low 0.50m curb
       const glassPts = [
-        [-halfW - 0.06, wallH],
-        [-halfW - 0.06, shieldTopY],
-        [halfW + 0.06, wallH],
-        [halfW + 0.06, shieldTopY],
+        [-halfW - 0.05, wallH],
+        [-halfW - 0.05, shieldTopY],
+        [halfW + 0.05, wallH],
+        [halfW + 0.05, shieldTopY],
       ];
       for (let g = 0; g < 4; g++) {
         const [gx, gy] = glassPts[g];
@@ -3055,12 +3141,12 @@ class MarbleRushApp {
         glassUvs.push(g % 2, vCoord);
       }
 
-      // Top metallic guardrail cap above the tempered safety shield
+      // Slim hairline brushed aluminum edge cap on top of glass fence (unobstructed view)
       const railPts = [
-        [-halfW - 0.16, shieldTopY + 0.04],
-        [-halfW + 0.04, shieldTopY + 0.04],
-        [halfW - 0.04, shieldTopY + 0.04],
-        [halfW + 0.16, shieldTopY + 0.04],
+        [-halfW - 0.08, shieldTopY + 0.02],
+        [-halfW - 0.02, shieldTopY + 0.02],
+        [halfW + 0.02, shieldTopY + 0.02],
+        [halfW + 0.08, shieldTopY + 0.02],
       ];
       for (let r = 0; r < 4; r++) {
         const [rx, ry] = railPts[r];
@@ -3143,8 +3229,8 @@ class MarbleRushApp {
       this.colliderMeta.set(col.handle, { kind: 'wall' });
     };
 
-    addEndWall(stations[0], -1, wallH + 0.3, 5.8);
-    addEndWall(stations[stations.length - 1], 1, wallH + 0.7, 5.8);
+    addEndWall(stations[0], -1, 1.35, 6.2);
+    addEndWall(stations[stations.length - 1], 1, 1.55, 6.2);
 
     const trackGeo = new THREE.BufferGeometry();
     trackGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -3172,11 +3258,12 @@ class MarbleRushApp {
     glassGeo.setIndex(glassIndices);
     glassGeo.computeVertexNormals();
     const glassMat = new THREE.MeshPhysicalMaterial({
-      color: 0xdbeafe,
+      color: 0xdcebf7,
       transparent: true,
-      opacity: 0.13,
-      roughness: 0.14,
-      metalness: 0.08,
+      opacity: 0.11,
+      roughness: 0.08,
+      metalness: 0.06,
+      envMapIntensity: 0.85,
       depthWrite: false,
       side: THREE.DoubleSide,
     });
@@ -3191,46 +3278,14 @@ class MarbleRushApp {
 
     const railMat = new THREE.MeshStandardMaterial({
       color: scaleHexColorInt(mapCfg?.railColor ?? 0x6f767e, mapCfg?._darkCfg?.trackMul ?? 1.0),
-      roughness: 0.38,
+      roughness: 0.35,
       metalness: 0.72,
       side: THREE.DoubleSide,
     });
     const railMesh = new THREE.Mesh(railGeo, railMat);
-    railMesh.castShadow = true;
+    railMesh.castShadow = false;
     railMesh.receiveShadow = true;
     this.trackGroup.add(railMesh);
-
-    // Slender safety-fence stanchion posts along both sides every 6m
-    const postPositions = [];
-    for (let i = 0; i < numStations; i += 12) {
-      const st = stations[i];
-      for (const side of [-1, 1]) {
-        const px = side * (halfW + 0.12);
-        const py = wallH + (shieldTopY - wallH) * 0.5;
-        postPositions.push({
-          pos: new THREE.Vector3(
-            st.pos.x + st.R.x * px + st.U.x * py,
-            st.pos.y + st.R.y * px + st.U.y * py,
-            st.pos.z + st.R.z * px + st.U.z * py
-          ),
-          quat: st.quat,
-        });
-      }
-    }
-    if (postPositions.length > 0) {
-      const postGeo = new THREE.BoxGeometry(0.12, shieldTopY - wallH + 0.12, 0.14);
-      const postIM = new THREE.InstancedMesh(postGeo, railMat, postPositions.length);
-      for (let i = 0; i < postPositions.length; i++) {
-        this._dummy.position.copy(postPositions[i].pos);
-        this._dummy.quaternion.copy(postPositions[i].quat);
-        this._dummy.scale.set(1, 1, 1);
-        this._dummy.updateMatrix();
-        postIM.setMatrixAt(i, this._dummy.matrix);
-      }
-      postIM.instanceMatrix.needsUpdate = true;
-      postIM.computeBoundingSphere();
-      this.trackGroup.add(postIM);
-    }
 
     // Painted matte motorsport rumble curbs flanking both track shoulders (non-emissive)
     const curbPositions = [];
@@ -3548,18 +3603,50 @@ class MarbleRushApp {
       return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz;
     };
 
-    // Reflective Valley Lakes / Fjord / Coastal Ocean Water Plane
+    // Animated Reflective Valley Lakes / Fjord / Coastal Ocean Water Plane
     if (mapCfg?.hasWater) {
-      const waterGeo = new THREE.PlaneGeometry(groundSize * 0.98, groundSize * 0.98);
+      const waterGeo = new THREE.PlaneGeometry(groundSize * 0.98, groundSize * 0.98, 24, 24);
       waterGeo.rotateX(-Math.PI / 2);
+      const waterUniforms = { uTime: { value: 0 } };
+      this.waterUniforms = waterUniforms;
       const waterMat = new THREE.MeshStandardMaterial({
         color: scaleHexColorInt(mapCfg.waterColor ?? 0x205d79, terrainMul),
         normalMap: this.shared.trackNormalTex,
-        normalScale: new THREE.Vector2(0.16, 0.16),
-        roughness: 0.14,
-        metalness: 0.35,
-        envMapIntensity: 1.15,
+        normalScale: new THREE.Vector2(0.24, 0.24),
+        roughness: 0.12,
+        metalness: 0.38,
+        envMapIntensity: 1.25,
       });
+      waterMat.onBeforeCompile = (shader) => {
+        shader.uniforms.uTime = waterUniforms.uTime;
+        shader.vertexShader = shader.vertexShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+            uniform float uTime;
+            varying vec3 vWaterWorldPos;`
+          )
+          .replace(
+            '#include <begin_vertex>',
+            `#include <begin_vertex>
+            transformed.y += sin(position.x * 0.12 + uTime * 1.4) * 0.045 + cos(position.z * 0.14 - uTime * 1.1) * 0.045;
+            vWaterWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+          );
+        shader.fragmentShader = shader.fragmentShader
+          .replace(
+            '#include <common>',
+            `#include <common>
+            uniform float uTime;
+            varying vec3 vWaterWorldPos;`
+          )
+          .replace(
+            '#include <normal_fragment_maps>',
+            `#include <normal_fragment_maps>
+            float w1 = sin(vWaterWorldPos.x * 0.36 + uTime * 1.65) * 0.025;
+            float w2 = cos(vWaterWorldPos.z * 0.42 - uTime * 1.35) * 0.025;
+            normal = normalize(normal + vec3(w1, 0.0, w2));`
+          );
+      };
       this.waterMesh = new THREE.Mesh(waterGeo, waterMat);
       this.waterMesh.position.set(centerX, waterY, centerZ);
       this.waterMesh.userData.baseY = waterY;
@@ -3567,7 +3654,7 @@ class MarbleRushApp {
       this.trackGroup.add(this.waterMesh);
     }
 
-    // Grounded Concrete/Steel Viaduct Piers anchored to exact terrain elevation
+    // Grounded Concrete/Steel Viaduct Piers with Crossheads anchored to exact terrain elevation
     const darkTrackMul = mapCfg?._darkCfg?.trackMul ?? 1.0;
     const pillarMat = new THREE.MeshStandardMaterial({
       color: scaleHexColorInt(mapCfg?.pylonColor ?? 0x4c5258, darkTrackMul),
@@ -3584,6 +3671,7 @@ class MarbleRushApp {
       const st = stations[i];
       const pylonGroup = new THREE.Group();
       const offsetX = this.config.trackWidth * 0.42;
+      let builtLegs = 0;
 
       for (const side of [-1, 1]) {
         const legPos = st.pos.clone().addScaledVector(st.R, side * offsetX);
@@ -3620,6 +3708,19 @@ class MarbleRushApp {
         foot.position.set(legPos.x, legGroundY + 0.15, legPos.z);
         foot.receiveShadow = true;
         pylonGroup.add(foot);
+        builtLegs++;
+      }
+
+      if (builtLegs === 2) {
+        const capBeam = new THREE.Mesh(
+          new THREE.BoxGeometry(offsetX * 2 + 0.8, 0.42, 0.75),
+          pillarMat
+        );
+        capBeam.position.copy(st.pos).addScaledVector(st.U, -0.78);
+        capBeam.quaternion.copy(st.quat);
+        capBeam.castShadow = true;
+        capBeam.receiveShadow = true;
+        pylonGroup.add(capBeam);
       }
 
       if (pylonGroup.children.length > 0) {
@@ -3633,12 +3734,12 @@ class MarbleRushApp {
   buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed) {
     const rng = mulberry32(seed * 7919 + 31);
     const halfW = this.config.trackWidth * 0.5;
-    const safeClearance = halfW + 6.4;
+    const safeClearance = halfW + 6.8;
     const safeClearanceSq = safeClearance * safeClearance;
     const hasWater = Boolean(mapCfg?.hasWater);
     const terrainMul = mapCfg?._darkCfg?.terrainMul ?? 1.0;
 
-    const scatterR = Math.min(260, Math.max(bounds.spanX, bounds.spanZ) * 0.85 + 70);
+    const scatterR = Math.min(265, Math.max(bounds.spanX, bounds.spanZ) * 0.88 + 75);
     const trunkMats = new THREE.MeshStandardMaterial({
       color: scaleHexColorInt(0x4f3b2b, terrainMul),
       roughness: 0.92,
@@ -3654,9 +3755,13 @@ class MarbleRushApp {
     const acaciaColors = [];
     const rockTransforms = [];
     const rockColors = [];
+    const basaltTransforms = [];
+    const basaltColors = [];
+    const mesaTransforms = [];
+    const mesaColors = [];
 
     const tmpCol = new THREE.Color();
-    const candidates = isSoftwareGl ? 190 : 380;
+    const candidates = isSoftwareGl ? 200 : 410;
 
     for (let i = 0; i < candidates; i++) {
       const wx = bounds.centerX + (rng() - 0.5) * scatterR * 2;
@@ -3681,7 +3786,7 @@ class MarbleRushApp {
 
       const weights = evaluateTerritoryWeights(nearest.u, wx, wz, mapKey, seed);
       const slopeCheck = Math.abs(sampleHeight(wx + 1.5, wz) - wy) + Math.abs(sampleHeight(wx, wz + 1.5) - wy);
-      const scale = 0.78 + rng() * 0.62;
+      const scale = 0.78 + rng() * 0.66;
       const rotY = rng() * Math.PI * 2;
 
       const zonePick = weights.alpine + weights.arctic * 0.85 + weights.coastal * 0.7 + weights.bamboo * 0.9 + weights.autumn * 0.95;
@@ -3693,18 +3798,37 @@ class MarbleRushApp {
         rng() < 0.28;
 
       if (rockTrigger) {
-        const sx = (1.1 + rng() * 2.2) * scale;
-        const sy = (0.7 + rng() * (weights.canyon > 0.4 || weights.volcanic > 0.4 ? 2.6 : 1.1)) * scale;
-        const sz = (1.1 + rng() * 2.1) * scale;
-        rockTransforms.push({ x: wx, y: wy + sy * 0.3, z: wz, sx, sy, sz, rotY });
-        if (weights.canyon > 0.4) tmpCol.setHex(0x8d442b);
-        else if (weights.volcanic > 0.4) tmpCol.setHex(0x232429);
-        else if (weights.badlands > 0.45) tmpCol.setHex(0xa87d48);
-        else if (weights.arctic > 0.45) tmpCol.setHex(0x555f6b);
-        else tmpCol.setHex(0x6e716d);
-        tmpCol.offsetHSL(0, 0, (rng() - 0.5) * 0.08);
-        tmpCol.multiplyScalar(terrainMul);
-        rockColors.push(tmpCol.clone());
+        if ((weights.volcanic > 0.42 || weights.arctic > 0.48) && rng() < 0.62) {
+          const h = (2.4 + rng() * 4.2) * scale;
+          const r = (0.75 + rng() * 0.65) * scale;
+          basaltTransforms.push({ x: wx, y: wy + h * 0.45, z: wz, r, h, rotY });
+          tmpCol.setHex(weights.volcanic > 0.42 ? 0x26282e : 0x738494);
+          tmpCol.offsetHSL(0, 0, (rng() - 0.5) * 0.08);
+          tmpCol.multiplyScalar(terrainMul);
+          basaltColors.push(tmpCol.clone());
+        } else if ((weights.canyon > 0.42 || weights.badlands > 0.48) && rng() < 0.45) {
+          const sx = (2.4 + rng() * 2.8) * scale;
+          const sy = (1.6 + rng() * 3.0) * scale;
+          const sz = (2.2 + rng() * 2.6) * scale;
+          mesaTransforms.push({ x: wx, y: wy + sy * 0.42, z: wz, sx, sy, sz, rotY });
+          tmpCol.setHex(weights.canyon > 0.42 ? 0x99482e : 0xb3834a);
+          tmpCol.offsetHSL(0, 0, (rng() - 0.5) * 0.07);
+          tmpCol.multiplyScalar(terrainMul);
+          mesaColors.push(tmpCol.clone());
+        } else {
+          const sx = (1.1 + rng() * 2.2) * scale;
+          const sy = (0.7 + rng() * (weights.canyon > 0.4 || weights.volcanic > 0.4 ? 2.4 : 1.1)) * scale;
+          const sz = (1.1 + rng() * 2.1) * scale;
+          rockTransforms.push({ x: wx, y: wy + sy * 0.3, z: wz, sx, sy, sz, rotY });
+          if (weights.canyon > 0.4) tmpCol.setHex(0x8d442b);
+          else if (weights.volcanic > 0.4) tmpCol.setHex(0x232429);
+          else if (weights.badlands > 0.45) tmpCol.setHex(0xa87d48);
+          else if (weights.arctic > 0.45) tmpCol.setHex(0x555f6b);
+          else tmpCol.setHex(0x6e716d);
+          tmpCol.offsetHSL(0, 0, (rng() - 0.5) * 0.08);
+          tmpCol.multiplyScalar(terrainMul);
+          rockColors.push(tmpCol.clone());
+        }
       } else if (weights.savanna > 0.4) {
         acaciaTransforms.push({ x: wx, y: wy, z: wz, scale, rotY });
         tmpCol.setHex(0x5d7236).offsetHSL(0, (rng() - 0.5) * 0.08, (rng() - 0.5) * 0.08);
@@ -3732,15 +3856,18 @@ class MarbleRushApp {
 
     if (pineTransforms.length > 0) {
       const n = pineTransforms.length;
-      const trunkGeo = new THREE.CylinderGeometry(0.18, 0.3, 2.2, 6);
-      trunkGeo.translate(0, 1.1, 0);
-      const coneLoGeo = new THREE.ConeGeometry(1.75, 3.6, 7);
-      coneLoGeo.translate(0, 3.2, 0);
-      const coneHiGeo = new THREE.ConeGeometry(1.2, 2.8, 7);
-      coneHiGeo.translate(0, 5.1, 0);
+      const trunkGeo = new THREE.CylinderGeometry(0.18, 0.32, 2.4, 6);
+      trunkGeo.translate(0, 1.2, 0);
+      const coneLoGeo = new THREE.ConeGeometry(1.9, 3.2, 7);
+      coneLoGeo.translate(0, 2.9, 0);
+      const coneMidGeo = new THREE.ConeGeometry(1.45, 2.7, 7);
+      coneMidGeo.translate(0, 4.5, 0);
+      const coneHiGeo = new THREE.ConeGeometry(0.95, 2.3, 7);
+      coneHiGeo.translate(0, 5.9, 0);
 
       const trunkIM = new THREE.InstancedMesh(trunkGeo, trunkMats, n);
       const coneLoIM = new THREE.InstancedMesh(coneLoGeo, pineFoliageMat, n);
+      const coneMidIM = new THREE.InstancedMesh(coneMidGeo, pineFoliageMat, n);
       const coneHiIM = new THREE.InstancedMesh(coneHiGeo, pineFoliageMat, n);
 
       for (let i = 0; i < n; i++) {
@@ -3751,11 +3878,13 @@ class MarbleRushApp {
         this._dummy.updateMatrix();
         trunkIM.setMatrixAt(i, this._dummy.matrix);
         coneLoIM.setMatrixAt(i, this._dummy.matrix);
+        coneMidIM.setMatrixAt(i, this._dummy.matrix);
         coneHiIM.setMatrixAt(i, this._dummy.matrix);
         coneLoIM.setColorAt(i, pineColors[i]);
+        coneMidIM.setColorAt(i, pineColors[i]);
         coneHiIM.setColorAt(i, pineColors[i]);
       }
-      this.trackGroup.add(trunkIM, coneLoIM, coneHiIM);
+      this.trackGroup.add(trunkIM, coneLoIM, coneMidIM, coneHiIM);
     }
 
     if (acaciaTransforms.length > 0) {
@@ -3781,6 +3910,40 @@ class MarbleRushApp {
       this.trackGroup.add(trunkIM, canopyIM);
     }
 
+    if (basaltTransforms.length > 0) {
+      const n = basaltTransforms.length;
+      const hexGeo = new THREE.CylinderGeometry(0.95, 1.12, 1.0, 6);
+      const basaltIM = new THREE.InstancedMesh(hexGeo, rockMat, n);
+      basaltIM.receiveShadow = true;
+      for (let i = 0; i < n; i++) {
+        const t = basaltTransforms[i];
+        this._dummy.position.set(t.x, t.y, t.z);
+        this._dummy.rotation.set(0, t.rotY, 0);
+        this._dummy.scale.set(t.r, t.h, t.r);
+        this._dummy.updateMatrix();
+        basaltIM.setMatrixAt(i, this._dummy.matrix);
+        basaltIM.setColorAt(i, basaltColors[i]);
+      }
+      this.trackGroup.add(basaltIM);
+    }
+
+    if (mesaTransforms.length > 0) {
+      const n = mesaTransforms.length;
+      const mesaGeo = new THREE.CylinderGeometry(0.72, 1.15, 1.0, 7);
+      const mesaIM = new THREE.InstancedMesh(mesaGeo, rockMat, n);
+      mesaIM.receiveShadow = true;
+      for (let i = 0; i < n; i++) {
+        const t = mesaTransforms[i];
+        this._dummy.position.set(t.x, t.y, t.z);
+        this._dummy.rotation.set(0, t.rotY, 0);
+        this._dummy.scale.set(t.sx, t.sy, t.sz);
+        this._dummy.updateMatrix();
+        mesaIM.setMatrixAt(i, this._dummy.matrix);
+        mesaIM.setColorAt(i, mesaColors[i]);
+      }
+      this.trackGroup.add(mesaIM);
+    }
+
     if (rockTransforms.length > 0) {
       const n = rockTransforms.length;
       const rockGeo = new THREE.DodecahedronGeometry(1.0, 0);
@@ -3800,74 +3963,30 @@ class MarbleRushApp {
     }
   }
 
-  buildCheckpoints() {
-    const halfW = this.config.trackWidth * 0.5;
-    const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x454b52,
-      roughness: 0.48,
-      metalness: 0.62,
+  buildDistanceMarkers() {
+    // Clean, unobtrusive matte distance strips painted flush onto deck (zero posts or signs blocking sightlines)
+    const L = this.config.distanceMeters;
+    const stripW = Math.max(1.2, this.config.trackWidth - 1.4);
+    const stripGeo = new THREE.PlaneGeometry(stripW, 0.24);
+    stripGeo.rotateX(-Math.PI / 2);
+    const stripMat = new THREE.MeshStandardMaterial({
+      color: 0xd8d3c8,
+      roughness: 0.85,
+      metalness: 0.02,
+      transparent: true,
+      opacity: 0.45,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     });
-
-    this.trackData.checkpoints.forEach((cpS, idx) => {
-      const st = getStationAtS(this.trackData, cpS);
-      const cpGroup = new THREE.Group();
-
-      const cpBeaconMat = new THREE.MeshStandardMaterial({
-        color: 0xd97724,
-        roughness: 0.35,
-        metalness: 0.2,
-      });
-      const cpStripMat = new THREE.MeshStandardMaterial({
-        color: 0xe6e2d8,
-        roughness: 0.78,
-        metalness: 0.04,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-      });
-
-      // Crisp painted surface timing line
-      const stripGeo = new THREE.PlaneGeometry(this.config.trackWidth - 0.75, 0.52);
-      stripGeo.rotateX(-Math.PI / 2);
-      const strip = new THREE.Mesh(stripGeo, cpStripMat);
-      strip.position.set(0, 0.025, 0);
+    for (let s = 25; s <= L - 15; s += 25) {
+      const st = getStationAtS(this.trackData, s);
+      const strip = new THREE.Mesh(stripGeo, stripMat);
+      strip.position.copy(st.pos).addScaledVector(st.U, 0.018);
+      strip.quaternion.copy(st.quat);
       strip.receiveShadow = true;
-      cpGroup.add(strip);
-
-      // Steel trackside sector posts & painted signal blocks
-      for (const side of [-1, 1]) {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.28, 2.75, 0.28), pillarMat);
-        post.position.set(side * (halfW + 0.24), 1.38, 0);
-        post.castShadow = true;
-        cpGroup.add(post);
-
-        const beacon = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.34, 0.32), cpBeaconMat);
-        beacon.position.set(side * (halfW + 0.24), 2.86, 0);
-        cpGroup.add(beacon);
-      }
-
-      const sign = new THREE.Mesh(
-        new THREE.BoxGeometry(1.7, 0.82, 0.12),
-        new THREE.MeshStandardMaterial({
-          map: createSignCanvasTexture(`CP ${idx + 1} · ${cpS}m`, '#20221e', '#d97724'),
-          roughness: 0.42,
-        })
-      );
-      sign.position.set(halfW + 0.55, 2.3, 0);
-      cpGroup.add(sign);
-
-      cpGroup.position.copy(st.pos);
-      cpGroup.quaternion.copy(st.quat);
-      this.trackGroup.add(cpGroup);
-
-      this.checkpointVisuals.push({
-        s: cpS,
-        pos: st.pos.clone().addScaledVector(st.U, 1.5),
-        beaconMat: cpBeaconMat,
-        stripMat: cpStripMat,
-        triggered: false,
-      });
-    });
+      this.trackGroup.add(strip);
+    }
   }
 
   buildBoosterPads() {
@@ -4046,7 +4165,7 @@ class MarbleRushApp {
     strip.receiveShadow = true;
     this.trackGroup.add(strip);
 
-    // Finish-Line Steel Truss Arch
+    // Finish-Line Architectural Truss Arch
     const archGroup = new THREE.Group();
     const metalMat = new THREE.MeshStandardMaterial({
       color: 0x4c5259,
@@ -4054,9 +4173,9 @@ class MarbleRushApp {
       metalness: 0.72,
     });
     const accentMat = new THREE.MeshStandardMaterial({
-      color: 0xd97724,
-      roughness: 0.45,
-      metalness: 0.25,
+      color: 0xb08642,
+      roughness: 0.34,
+      metalness: 0.65,
     });
 
     const pillarH = 4.6;
@@ -4068,27 +4187,27 @@ class MarbleRushApp {
     pR.position.set(halfW + 0.3, pillarH * 0.5, 0);
     pR.castShadow = true;
 
-    const beamGeo = new THREE.BoxGeometry(this.config.trackWidth + 1.4, 0.6, 0.7);
+    const beamGeo = new THREE.BoxGeometry(this.config.trackWidth + 1.4, 0.55, 0.65);
     const beam = new THREE.Mesh(beamGeo, metalMat);
     beam.position.set(0, pillarH, 0);
     beam.castShadow = true;
 
-    const bannerGeo = new THREE.BoxGeometry(this.config.trackWidth + 0.4, 1.15, 0.16);
+    const bannerGeo = new THREE.BoxGeometry(this.config.trackWidth + 0.4, 1.05, 0.16);
     const bannerMat = new THREE.MeshStandardMaterial({
       map: this.shared.checkerTex,
       roughness: 0.52,
     });
     const banner = new THREE.Mesh(bannerGeo, bannerMat);
-    banner.position.set(0, pillarH - 0.75, 0);
+    banner.position.set(0, pillarH - 0.72, 0);
 
     const signMesh = new THREE.Mesh(
       new THREE.BoxGeometry(3.4, 0.95, 0.22),
       new THREE.MeshStandardMaterial({
-        map: createSignCanvasTexture('FINISH', '#20221e', '#d97724'),
+        map: createSignCanvasTexture('FINISH', '#1c1f24', '#d8b26e'),
         roughness: 0.42,
       })
     );
-    signMesh.position.set(0, pillarH + 0.75, 0);
+    signMesh.position.set(0, pillarH + 0.72, 0);
 
     const trimL = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.2, 0.62), accentMat);
     trimL.position.set(-halfW - 0.3, 2.2, 0);
@@ -4100,51 +4219,120 @@ class MarbleRushApp {
     archGroup.quaternion.copy(st.quat);
     this.trackGroup.add(archGroup);
 
-    // Winner Podium beside Finish Plaza (natural stone/concrete plinth + bronze/silver/gold tops)
+    // Championship Victory Pavilion beside Finish Plaza (Travertine steps, canopy arch, faceted pedestals, laurel halos & flags)
     const podSt = getStationAtS(this.trackData, L + 13);
     const podiumGroup = new THREE.Group();
-    const basePlinth = new THREE.Mesh(
-      new THREE.BoxGeometry(6.8, 0.6, 3.2),
-      new THREE.MeshStandardMaterial({ color: 0x484b49, roughness: 0.78, metalness: 0.1 })
-    );
-    basePlinth.position.set(0, 0.3, 0);
-    basePlinth.receiveShadow = true;
-    podiumGroup.add(basePlinth);
 
+    const stoneMat = new THREE.MeshStandardMaterial({ color: 0xc2b9a7, roughness: 0.78, metalness: 0.06 });
+    const deckMat = new THREE.MeshStandardMaterial({ color: 0x5c4b3b, roughness: 0.68, metalness: 0.08 });
+    const graniteMat = new THREE.MeshStandardMaterial({ color: 0x3a3e44, roughness: 0.54, metalness: 0.24 });
+    const steelArchMat = new THREE.MeshStandardMaterial({ color: 0x4b5159, roughness: 0.36, metalness: 0.72 });
+    const brassTrimMat = new THREE.MeshStandardMaterial({ color: 0xc59b49, roughness: 0.28, metalness: 0.78 });
+
+    // Stepped Two-Tier Terrace
+    const lowerTerrace = new THREE.Mesh(new THREE.BoxGeometry(9.2, 0.48, 4.8), stoneMat);
+    lowerTerrace.position.set(0, 0.24, 0);
+    lowerTerrace.receiveShadow = true;
+    lowerTerrace.castShadow = true;
+    podiumGroup.add(lowerTerrace);
+
+    const upperTerrace = new THREE.Mesh(new THREE.BoxGeometry(7.6, 0.36, 3.6), deckMat);
+    upperTerrace.position.set(0, 0.66, 0);
+    upperTerrace.receiveShadow = true;
+    upperTerrace.castShadow = true;
+    podiumGroup.add(upperTerrace);
+
+    // Front approach stairs
+    for (let sIdx = 0; sIdx < 2; sIdx++) {
+      const stair = new THREE.Mesh(
+        new THREE.BoxGeometry(4.2 - sIdx * 0.4, 0.22, 0.55),
+        stoneMat
+      );
+      stair.position.set(0, 0.11 + sIdx * 0.22, 2.55 - sIdx * 0.45);
+      stair.receiveShadow = true;
+      podiumGroup.add(stair);
+    }
+
+    // Sculptural Pavilion Roof Arch Columns & Canopy
+    for (const sideX of [-3.5, 3.5]) {
+      for (const sideZ of [-1.45, 1.45]) {
+        const col = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 4.3, 10), steelArchMat);
+        col.position.set(sideX, 0.84 + 2.15, sideZ);
+        col.castShadow = true;
+        podiumGroup.add(col);
+      }
+      const rib = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.28, 3.4), steelArchMat);
+      rib.position.set(sideX, 5.2, 0);
+      podiumGroup.add(rib);
+    }
+
+    const roofFrame = new THREE.Mesh(new THREE.BoxGeometry(7.8, 0.24, 3.4), steelArchMat);
+    roofFrame.position.set(0, 5.28, 0);
+    roofFrame.castShadow = true;
+    podiumGroup.add(roofFrame);
+
+    const skylightMat = new THREE.MeshPhysicalMaterial({
+      color: 0xe6eff5,
+      transparent: true,
+      opacity: 0.42,
+      roughness: 0.12,
+      metalness: 0.08,
+    });
+    const roofGlass = new THREE.Mesh(new THREE.BoxGeometry(6.9, 0.08, 2.7), skylightMat);
+    roofGlass.position.set(0, 5.4, 0);
+    podiumGroup.add(roofGlass);
+
+    const friezeSign = new THREE.Mesh(
+      new THREE.BoxGeometry(4.4, 0.62, 0.16),
+      new THREE.MeshStandardMaterial({
+        map: createSignCanvasTexture('CHAMPIONS', '#1e2126', '#d8b26e'),
+        roughness: 0.38,
+      })
+    );
+    friezeSign.position.set(0, 5.45, 1.72);
+    podiumGroup.add(friezeSign);
+
+    const friezeTrim = new THREE.Mesh(new THREE.BoxGeometry(7.9, 0.09, 3.48), brassTrimMat);
+    friezeTrim.position.set(0, 5.14, 0);
+    podiumGroup.add(friezeTrim);
+
+    // Three Sculpted Octagonal Marble-Granite Pedestals + Trophy Marbles + Rotating Metallic Laurel Halos
     const steps = [
-      { rank: 2, x: -2.0, h: 1.15, color: 0xc2c7ce },
-      { rank: 1, x: 0.0, h: 1.75, color: 0xdba028 },
-      { rank: 3, x: 2.0, h: 0.8, color: 0xb86d32 },
+      { rank: 2, x: -2.15, h: 1.25, color: 0xd0d6de },
+      { rank: 1, x: 0.0, h: 1.95, color: 0xe5b84b },
+      { rank: 3, x: 2.15, h: 0.85, color: 0xc47a42 },
     ];
 
     for (const step of steps) {
       const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.75, 0.85, step.h, 20),
-        new THREE.MeshStandardMaterial({ color: 0x5c605d, roughness: 0.68, metalness: 0.18 })
+        new THREE.CylinderGeometry(0.76, 0.92, step.h, 8),
+        graniteMat
       );
-      col.position.set(step.x, 0.6 + step.h * 0.5, 0);
+      col.position.set(step.x, 0.84 + step.h * 0.5, 0);
       col.castShadow = true;
+      col.receiveShadow = true;
       podiumGroup.add(col);
 
+      const collarMat = new THREE.MeshStandardMaterial({
+        color: step.color,
+        roughness: 0.24,
+        metalness: 0.82,
+      });
       const ring = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.78, 0.78, 0.12, 20),
-        new THREE.MeshStandardMaterial({
-          color: step.color,
-          roughness: 0.28,
-          metalness: 0.78,
-        })
+        new THREE.CylinderGeometry(0.82, 0.82, 0.14, 8),
+        collarMat
       );
-      ring.position.set(step.x, 0.6 + step.h + 0.06, 0);
+      ring.position.set(step.x, 0.84 + step.h + 0.07, 0);
       podiumGroup.add(ring);
 
       const plaque = new THREE.Mesh(
-        new THREE.BoxGeometry(0.9, 0.45, 0.08),
+        new THREE.BoxGeometry(0.88, 0.44, 0.08),
         new THREE.MeshStandardMaterial({
-          map: createSignCanvasTexture(`${step.rank}`, '#20221e', `#${step.color.toString(16).padStart(6, '0')}`),
-          roughness: 0.42,
+          map: createSignCanvasTexture(`${step.rank}`, '#1d2024', `#${step.color.toString(16).padStart(6, '0')}`),
+          roughness: 0.4,
         })
       );
-      plaque.position.set(step.x, 0.6 + step.h * 0.5, 0.82);
+      plaque.position.set(step.x, 0.84 + step.h * 0.55, 0.88);
       podiumGroup.add(plaque);
 
       const trophy = new THREE.Mesh(
@@ -4152,48 +4340,113 @@ class MarbleRushApp {
         new THREE.MeshPhysicalMaterial({
           color: 0xffffff,
           map: this.shared.marbleTex,
-          roughness: 0.14,
-          metalness: 0.08,
-          clearcoat: 0.92,
-          clearcoatRoughness: 0.05,
-          ior: 1.52,
-          envMapIntensity: 1.15,
+          roughness: 0.22,
+          metalness: 0.02,
+          clearcoat: 0.28,
+          clearcoatRoughness: 0.08,
+          ior: 1.48,
+          reflectivity: 0.48,
+          envMapIntensity: 0.28,
         })
       );
-      trophy.scale.setScalar(1.25);
-      const baseTrophyY = 0.6 + step.h + 0.12 + BALL_RADIUS * 1.25;
+      trophy.scale.setScalar(1.3);
+      const baseTrophyY = 0.84 + step.h + 0.14 + BALL_RADIUS * 1.3;
       trophy.position.set(step.x, baseTrophyY, 0);
       trophy.visible = false;
       trophy.castShadow = true;
       podiumGroup.add(trophy);
 
-      this.podiumSlots.push({ rank: step.rank, mesh: trophy, baseY: baseTrophyY });
+      const haloGeo = new THREE.TorusGeometry(0.78, 0.045, 10, 32);
+      const haloRing = new THREE.Mesh(haloGeo, collarMat);
+      haloRing.position.set(step.x, baseTrophyY, 0);
+      haloRing.rotation.x = Math.PI * 0.28;
+      haloRing.visible = false;
+      podiumGroup.add(haloRing);
+
+      this.podiumSlots.push({
+        rank: step.rank,
+        mesh: trophy,
+        haloRing,
+        baseY: baseTrophyY,
+      });
+    }
+
+    // Waving Checkered Flags flanking the Victory Pavilion
+    const flagMat = new THREE.MeshStandardMaterial({
+      map: this.shared.checkerTex,
+      roughness: 0.65,
+      metalness: 0.04,
+      side: THREE.DoubleSide,
+    });
+    for (const fx of [-4.2, 4.2]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 4.8, 8), steelArchMat);
+      pole.position.set(fx, 0.48 + 2.4, -1.6);
+      podiumGroup.add(pole);
+
+      const flagCloth = new THREE.Mesh(new THREE.PlaneGeometry(1.45, 0.85, 8, 2), flagMat);
+      flagCloth.position.set(fx + (fx < 0 ? -0.72 : 0.72), 4.7, -1.6);
+      flagCloth.userData.phase = fx < 0 ? 0.0 : 1.7;
+      podiumGroup.add(flagCloth);
+      this.flagMeshes.push(flagCloth);
     }
 
     const podPos = podSt.pos
       .clone()
-      .addScaledVector(podSt.R, halfW + 4.4)
+      .addScaledVector(podSt.R, halfW + 5.2)
       .addScaledVector(podSt.U, -0.35);
     podiumGroup.position.copy(podPos);
     podiumGroup.quaternion.copy(podSt.quat);
     this.trackGroup.add(podiumGroup);
 
-    // Overhead timing / distance marker gantries every ~42m (matte steel, no neon light bars)
+    // Opposite Finish Plaza Architectural Grandstand Tiers & Timing Booth
+    const standGroup = new THREE.Group();
+    const standBaseMat = new THREE.MeshStandardMaterial({ color: 0x52575e, roughness: 0.72, metalness: 0.14 });
+    const benchMat = new THREE.MeshStandardMaterial({ color: 0x8c5938, roughness: 0.74, metalness: 0.05 });
+    for (let t = 0; t < 3; t++) {
+      const tier = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.45, 1.15), standBaseMat);
+      tier.position.set(0, 0.225 + t * 0.45, -t * 1.05);
+      tier.receiveShadow = true;
+      tier.castShadow = true;
+      standGroup.add(tier);
+
+      const bench = new THREE.Mesh(new THREE.BoxGeometry(8.1, 0.12, 0.65), benchMat);
+      bench.position.set(0, 0.48 + t * 0.45, -t * 1.05);
+      standGroup.add(bench);
+    }
+    const booth = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.2, 2.0), graniteMat);
+    booth.position.set(0, 2.1, -3.2);
+    booth.castShadow = true;
+    standGroup.add(booth);
+    const boothGlass = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.95, 0.08), skylightMat);
+    boothGlass.position.set(0, 2.35, -2.18);
+    standGroup.add(boothGlass);
+
+    const standSt = getStationAtS(this.trackData, L + 9);
+    const standPos = standSt.pos
+      .clone()
+      .addScaledVector(standSt.R, -(halfW + 6.2))
+      .addScaledVector(standSt.U, -0.35);
+    standGroup.position.copy(standPos);
+    standGroup.quaternion.copy(standSt.quat);
+    standGroup.rotateY(Math.PI * 0.35);
+    this.trackGroup.add(standGroup);
+
+    // Clean major architectural span portals every 80m so sightlines remain wide open
     const gantryMat = new THREE.MeshStandardMaterial({
       color: 0x4a5056,
       roughness: 0.48,
       metalness: 0.65,
     });
-    for (let s = 26; s < L - 12; s += 42) {
+    for (let s = 55; s < L - 22; s += 80) {
       const gst = getStationAtS(this.trackData, s);
       const gantry = new THREE.Group();
-      const postH = 5.4;
-      const gPostL = new THREE.Mesh(new THREE.BoxGeometry(0.32, postH, 0.32), gantryMat);
+      const postH = 5.5;
+      const gPostL = new THREE.Mesh(new THREE.BoxGeometry(0.28, postH, 0.28), gantryMat);
       gPostL.position.set(-halfW - 0.35, postH * 0.5, 0);
-      const gPostR = new THREE.Mesh(new THREE.BoxGeometry(0.32, postH, 0.32), gantryMat);
+      const gPostR = new THREE.Mesh(new THREE.BoxGeometry(0.28, postH, 0.28), gantryMat);
       gPostR.position.set(halfW + 0.35, postH * 0.5, 0);
       const spanBeam = new THREE.Mesh(
-        new THREE.BoxGeometry(this.config.trackWidth + 1.1, 0.28, 0.34),
+        new THREE.BoxGeometry(this.config.trackWidth + 1.1, 0.24, 0.3),
         gantryMat
       );
       spanBeam.position.set(0, postH, 0);
@@ -4438,9 +4691,9 @@ class MarbleRushApp {
       metalness: 0.35,
     });
     const accentMat = new THREE.MeshStandardMaterial({
-      color: 0xf59e0b,
-      roughness: 0.32,
-      metalness: 0.55,
+      color: 0x9c6234,
+      roughness: 0.38,
+      metalness: 0.52,
     });
 
     if (type === 'rotating_bar') {
@@ -4856,17 +5109,15 @@ class MarbleRushApp {
 
       const colorHex = this.ballColors[i] || '#f59e0b';
       const mat = new THREE.MeshPhysicalMaterial({
-        color: new THREE.Color(colorHex),
-        emissive: new THREE.Color(colorHex),
-        emissiveIntensity: 0.22,
+        color: setRichMarbleColor(new THREE.Color(), colorHex),
         map: this.shared.marbleTex,
-        roughness: 0.16,
+        roughness: 0.22,
         metalness: 0.02,
-        clearcoat: 0.85,
-        clearcoatRoughness: 0.06,
-        ior: 1.5,
-        reflectivity: 0.82,
-        envMapIntensity: 0.65,
+        clearcoat: 0.28,
+        clearcoatRoughness: 0.08,
+        ior: 1.48,
+        reflectivity: 0.48,
+        envMapIntensity: 0.26,
       });
 
       const mesh = new THREE.Mesh(this.shared.ballGeo, mat);
@@ -4938,14 +5189,15 @@ class MarbleRushApp {
     if (this.raceState === 'FINISHED' || this.raceState === 'RACING' || this.raceState === 'PAUSED') {
       this.rebuildTrackAndRace({ preserveCamera: true });
     }
-    this.sound.ensureContext();
-    const recStarted = this.recorder.start();
+    this.sound.ensureContext(true);
+    const activeQualityCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const recStarted = this.recorder.start(activeQualityCfg);
     this.dom.hudRecBadge.classList.toggle('hidden', !recStarted);
 
     this.raceState = 'COUNTDOWN';
     this.countdownRemaining = 3.2;
     this.lastCountdownDigit = null;
-    this.dom.countdownOverlay.classList.remove('hidden');
+    if (this.countdownMesh) this.countdownMesh.visible = false;
 
     // Auto-tuck configuration drawer on mobile/tablet or narrow viewports so action is clear
     if (window.innerWidth < 1180) {
@@ -5002,8 +5254,7 @@ class MarbleRushApp {
       this.ballColors[i] = hex;
       if (this.balls[i]) {
         this.balls[i].color = hex;
-        this.balls[i].mesh.material.color.set(hex);
-        this.balls[i].mesh.material.emissive.set(hex);
+        setRichMarbleColor(this.balls[i].mesh.material.color, hex);
       }
     }
     this.renderBallColorEditor();
@@ -5028,6 +5279,41 @@ class MarbleRushApp {
   // ==========================================================================
   // Physics Step & Real Progress / Finish Measurement
   // ==========================================================================
+  showCanvasCountdown(label, isGo = false) {
+    if (!this.countdownCtx || !this.countdownMesh || !this.countdownTex) return;
+    const ctx = this.countdownCtx;
+    const w = this.countdownCanvas.width;
+    const h = this.countdownCanvas.height;
+    const k = w / 512;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(18, 21, 26, 0.74)';
+    ctx.strokeStyle = isGo ? 'rgba(92, 194, 134, 0.92)' : 'rgba(216, 178, 110, 0.85)';
+    ctx.lineWidth = 4 * k;
+    const rw = (isGo ? 304 : 216) * k;
+    const rh = 176 * k;
+    const rx = (w - rw) * 0.5;
+    const ry = (h - rh) * 0.5;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(rx, ry, rw, rh, 18 * k);
+    else ctx.rect(rx, ry, rw, rh);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = `700 ${116 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = isGo ? '#68d391' : '#f4f1e8';
+    ctx.fillText(label, w * 0.5, h * 0.5 + 4 * k);
+    ctx.restore();
+
+    this.countdownTex.needsUpdate = true;
+    this.countdownMesh.visible = true;
+    this.countdownAnimTime = 0;
+    this.countdownMesh.scale.setScalar(1.18);
+  }
+
   stepSimulation(dt) {
     if (this.raceState === 'REPLAY') {
       this.stepReplaySimulation(dt);
@@ -5041,31 +5327,28 @@ class MarbleRushApp {
         this.lastCountdownDigit = digit;
         if (digit >= 1 && digit <= 3) {
           this.dom.countdownText.textContent = String(digit);
-          this.dom.countdownText.classList.remove('go');
+          this.showCanvasCountdown(String(digit), false);
           this.sound.playCountdown(false);
           this.startLightPods.forEach((pod, idx) => {
             const lit = (digit === 3 && idx === 0) || (digit <= 2 && idx <= 1);
-            pod.mesh.material.emissiveIntensity = lit ? 2.6 : 0.08;
+            pod.mesh.material.emissiveIntensity = lit ? 0.95 : 0.04;
           });
         } else if (digit <= 0) {
           this.dom.countdownText.textContent = 'GO!';
-          this.dom.countdownText.classList.add('go');
+          this.showCanvasCountdown('GO!', true);
           this.sound.playCountdown(true);
           this.startLightPods.forEach((pod, idx) => {
-            pod.mesh.material.emissiveIntensity = idx === 2 ? 3.2 : 0.08;
+            pod.mesh.material.emissiveIntensity = idx === 2 ? 1.15 : 0.04;
           });
           this.raceState = 'RACING';
           this.replay.captureFrame(0, this.balls, this.kinematicHurdles, this.startGate);
           this.syncUiState();
           setTimeout(() => {
-            if (this.raceState !== 'COUNTDOWN') {
-              this.dom.countdownOverlay.classList.add('hidden');
+            if (this.raceState !== 'COUNTDOWN' && this.countdownMesh) {
+              this.countdownMesh.visible = false;
             }
-          }, 550);
+          }, 620);
         }
-        this.dom.countdownText.style.animation = 'none';
-        void this.dom.countdownText.offsetWidth;
-        this.dom.countdownText.style.animation = '';
       }
 
       this.world.timestep = FIXED_DT;
@@ -5489,20 +5772,10 @@ class MarbleRushApp {
         continue;
       }
 
-      // Update latest passed checkpoint + flash visual beacons on leader crossing
+      // Track silent recovery sectors for stuck-ball rescue (no intrusive visual checkpoints)
       for (const cpS of checkpoints) {
         if (ball.progressMeters >= cpS && cpS > ball.lastCheckpointS) {
           ball.lastCheckpointS = cpS;
-        }
-      }
-      if (ball.rank === 1) {
-        for (const cpVis of this.checkpointVisuals) {
-          if (!cpVis.triggered && ball.progressMeters >= cpVis.s) {
-            cpVis.triggered = true;
-            cpVis.beaconMat.color.setHex(0x2e9e66);
-            cpVis.stripMat.color.setHex(0x2e9e66);
-            this.sound.playCheckpointChime();
-          }
         }
       }
 
@@ -5535,8 +5808,9 @@ class MarbleRushApp {
 
         const podSlot = this.podiumSlots.find((slot) => slot.rank === ball.finishRank);
         if (podSlot) {
-          podSlot.mesh.material.color.set(ball.color);
+          setRichMarbleColor(podSlot.mesh.material.color, ball.color);
           podSlot.mesh.visible = true;
+          if (podSlot.haloRing) podSlot.haloRing.visible = true;
         }
 
         if (ball.finishRank === 1 && !this.winnerAnnounced) {
@@ -5738,7 +6012,6 @@ class MarbleRushApp {
     this.camBankRoll = 0;
     this.directorState.justCut = true;
 
-    if (this.trails) this.trails.reset();
     if (this.replay.hasData()) {
       this.applyReplayFrameAtTime(this.replay.totalDuration);
     }
@@ -5944,14 +6217,16 @@ class MarbleRushApp {
       this.startGate.mesh.position.lerpVectors(this.startGate.closedPos, this.startGate.openPos, eased);
     }
 
-    // Winner podium trophies appear at the exact moment each podium marble finishes
+    // Winner podium trophies & laurel halos appear at the exact moment each podium marble finishes
     for (const slot of this.podiumSlots) {
       const finisher = this.balls.find((b) => b.finishRank === slot.rank);
       if (finisher && finisher.finishTime !== null && finisher.finishTime <= clampedT + 0.05) {
-        slot.mesh.material.color.set(finisher.color);
+        setRichMarbleColor(slot.mesh.material.color, finisher.color);
         slot.mesh.visible = true;
+        if (slot.haloRing) slot.haloRing.visible = true;
       } else {
         slot.mesh.visible = false;
+        if (slot.haloRing) slot.haloRing.visible = false;
       }
     }
 
@@ -5965,7 +6240,6 @@ class MarbleRushApp {
     this.replay.prevTimeForAudio = clamped;
     this.replay.activeShotIdx = -1;
     this.directorState.justCut = true;
-    if (this.trails) this.trails.reset();
     this.applyReplayFrameAtTime(clamped);
     this.updateReplayHud(false);
     this.updateTelemetryHud();
@@ -6138,46 +6412,46 @@ class MarbleRushApp {
   }
 
   computeFollowShot(ball, angleIdx, st, rightSign = 1) {
-    // Sets this._v1 (camera pos) and this._v3 (look target), returns { fovBonus, bankEnabled }
-    const speedBonus = THREE.MathUtils.clamp(ball.currentSpeed * 0.36, 0, 12);
+    const speedBonus = THREE.MathUtils.clamp(ball.currentSpeed * 0.34, 0, 11);
+    const halfW = this.config.trackWidth * 0.5;
     if (angleIdx === 1) {
       // Low Bumper
       this._v3.copy(ball.worldPos).addScaledVector(st.T, 8.5).addScaledVector(st.U, 0.35);
       this._v1
         .copy(ball.worldPos)
-        .addScaledVector(st.T, -4.1)
-        .addScaledVector(st.U, 1.38)
+        .addScaledVector(st.T, -4.2)
+        .addScaledVector(st.U, 1.52)
         .addScaledVector(st.R, 0.52 * rightSign);
-      return { fov: 58 + speedBonus, bankEnabled: true };
+      return { fov: 56 + speedBonus, bankEnabled: true };
     }
     if (angleIdx === 2) {
-      // Side Drone
+      // Side Drone (frames cleanly through crystal-clear safety glass above 0.50m curb)
       const side = Math.cos(this.raceElapsedTime * 0.25) >= 0 ? 1 : -1;
-      this._v3.copy(ball.worldPos).addScaledVector(st.T, 3.4);
+      this._v3.copy(ball.worldPos).addScaledVector(st.T, 3.6);
       this._v1
         .copy(ball.worldPos)
-        .addScaledVector(st.T, 1.5)
-        .addScaledVector(st.U, 3.0)
-        .addScaledVector(st.R, 6.8 * side);
-      return { fov: 53 + speedBonus * 0.5, bankEnabled: false };
+        .addScaledVector(st.T, 1.4)
+        .addScaledVector(st.U, 2.85)
+        .addScaledVector(st.R, (halfW + 4.4) * side);
+      return { fov: 50 + speedBonus * 0.45, bankEnabled: false };
     }
     if (angleIdx === 3) {
       // Reverse Cam (looking back into chasing pack)
       this._v3.copy(ball.worldPos).addScaledVector(st.T, -5.8).addScaledVector(st.U, 0.4);
       this._v1
         .copy(ball.worldPos)
-        .addScaledVector(st.T, 5.8)
-        .addScaledVector(st.U, 2.35)
-        .addScaledVector(st.R, 0.9 * rightSign);
-      return { fov: 56 + speedBonus * 0.75, bankEnabled: false };
+        .addScaledVector(st.T, 6.2)
+        .addScaledVector(st.U, 2.45)
+        .addScaledVector(st.R, 0.85 * rightSign);
+      return { fov: 55 + speedBonus * 0.7, bankEnabled: false };
     }
     // 0: Classic Hero Chase
-    this._v3.copy(ball.worldPos).addScaledVector(st.T, 7.0);
+    this._v3.copy(ball.worldPos).addScaledVector(st.T, 7.2);
     this._v1
       .copy(ball.worldPos)
-      .addScaledVector(st.T, -8.5)
-      .addScaledVector(st.U, 4.2)
-      .addScaledVector(st.R, 1.15 * rightSign);
+      .addScaledVector(st.T, -8.8)
+      .addScaledVector(st.U, 4.3)
+      .addScaledVector(st.R, 1.1 * rightSign);
     return { fov: 52 + speedBonus, bankEnabled: true };
   }
 
@@ -6271,32 +6545,32 @@ class MarbleRushApp {
         targetFov = 49;
         dampFactor = 8.5;
       } else if (angleType === 'impact_close') {
-        const lookAhead = Math.min(L + 8, focusS + 4.4);
+        const lookAhead = Math.min(L + 8, focusS + 4.8);
         const camSt = getStationAtS(this.trackData, lookAhead);
-        this._v3.copy(this._v4).addScaledVector(st.U, 0.25);
+        this._v3.copy(this._v4).addScaledVector(st.U, 0.35);
         this._v1
           .copy(camSt.pos)
           .addScaledVector(camSt.U, 2.35)
-          .addScaledVector(camSt.R, rightSign * (halfW + 1.8));
-        targetFov = 46;
-        dampFactor = 13.5;
+          .addScaledVector(camSt.R, rightSign * (halfW + 3.4));
+        targetFov = 44;
+        dampFactor = 13.0;
       } else if (angleType === 'hurdle_hero') {
-        const hCamSt = getStationAtS(this.trackData, Math.min(L + 8, focusS + 5.2));
-        this._v3.copy(primary.worldPos).addScaledVector(st.T, 0.9);
+        const hCamSt = getStationAtS(this.trackData, Math.min(L + 8, focusS + 5.6));
+        this._v3.copy(primary.worldPos).addScaledVector(st.T, 1.0);
         this._v1
           .copy(hCamSt.pos)
-          .addScaledVector(hCamSt.U, 2.05)
-          .addScaledVector(hCamSt.R, rightSign * (halfW * 0.85));
-        targetFov = 54;
-        dampFactor = 12.0;
+          .addScaledVector(hCamSt.U, 2.2)
+          .addScaledVector(hCamSt.R, rightSign * (halfW * 0.78));
+        targetFov = 52;
+        dampFactor = 11.5;
       } else if (angleType === 'jump_profile') {
         this._v3.copy(primary.worldPos).addScaledVector(st.T, 2.8);
         this._v1
-          .copy(primary.worldPos)
+          .copy(st.pos)
           .addScaledVector(st.T, 0.8)
-          .addScaledVector(st.U, 1.8)
-          .addScaledVector(st.R, rightSign * (halfW + 4.2));
-        targetFov = 52;
+          .addScaledVector(st.U, 2.1)
+          .addScaledVector(st.R, rightSign * (halfW + 4.8));
+        targetFov = 50;
         dampFactor = 9.0;
       } else if (angleType === 'bumper_duel') {
         const info = this.computeFollowShot(primary, 1, st, rightSign);
@@ -6326,20 +6600,20 @@ class MarbleRushApp {
       } else if (angleType === 'side_drone') {
         this._v3.copy(this._v4).addScaledVector(st.T, 3.6);
         this._v1
-          .copy(this._v4)
+          .copy(st.pos)
           .addScaledVector(st.T, 1.4 - shotElapsed * 0.6)
-          .addScaledVector(st.U, 2.7)
-          .addScaledVector(st.R, rightSign * (halfW + 3.1));
-        targetFov = 50;
+          .addScaledVector(st.U, 2.95)
+          .addScaledVector(st.R, rightSign * (halfW + 4.2));
+        targetFov = 48;
         dampFactor = 9.0;
       } else if (angleType === 'finish_hero') {
         const finSt = getStationAtS(this.trackData, L + 9.2);
         this._v3.copy(leader.worldPos).lerp(finSt.pos, 0.28);
         this._v1
           .copy(finSt.pos)
-          .addScaledVector(finSt.U, 4.1)
-          .addScaledVector(finSt.R, -(halfW + 2.4));
-        targetFov = 48;
+          .addScaledVector(finSt.U, 4.3)
+          .addScaledVector(finSt.R, -(halfW + 2.8));
+        targetFov = 47;
         dampFactor = 9.5;
       } else {
         // apex_chase
@@ -6365,13 +6639,13 @@ class MarbleRushApp {
           .addScaledVector(startSt.R, 12.5 + sway);
       } else if (this.raceState === 'FINISHED') {
         const finSt = getStationAtS(this.trackData, L + 6);
-        const podSt = getStationAtS(this.trackData, L + 12);
-        this._v3.copy(podSt.pos).addScaledVector(podSt.R, this.config.trackWidth * 0.35);
+        const podSt = getStationAtS(this.trackData, L + 13);
+        this._v3.copy(podSt.pos).addScaledVector(podSt.R, halfW + 5.2).addScaledVector(podSt.U, 2.2);
         this._v1
           .copy(finSt.pos)
-          .addScaledVector(finSt.T, -16)
-          .addScaledVector(finSt.U, 12.5)
-          .addScaledVector(finSt.R, -10.5);
+          .addScaledVector(finSt.T, -15)
+          .addScaledVector(finSt.U, 11.5)
+          .addScaledVector(finSt.R, -9.5);
       } else {
         const st = getStationAtS(this.trackData, THREE.MathUtils.clamp(packS, 0, L));
         const orbitAngle = Math.sin(this.raceElapsedTime * 0.16) * 0.35;
@@ -6400,17 +6674,17 @@ class MarbleRushApp {
       } else if (this.raceState === 'FINISHED' || this.winnerAnnounced) {
         this.setDirectorShot('Podium Triumph');
         const podSt = getStationAtS(this.trackData, L + 13);
-        const orbit = Math.sin(nowSec * 0.55) * 4.5;
+        const orbit = Math.sin(nowSec * 0.45) * 4.2;
         this._v3
           .copy(podSt.pos)
-          .addScaledVector(podSt.R, halfW + 4.4)
-          .addScaledVector(podSt.U, 2.0);
+          .addScaledVector(podSt.R, halfW + 5.2)
+          .addScaledVector(podSt.U, 2.3);
         this._v1
           .copy(podSt.pos)
-          .addScaledVector(podSt.T, -10.5)
-          .addScaledVector(podSt.U, 5.2)
-          .addScaledVector(podSt.R, halfW + 4.4 + orbit);
-        targetFov = 46;
+          .addScaledVector(podSt.T, -11.5)
+          .addScaledVector(podSt.U, 4.8)
+          .addScaledVector(podSt.R, halfW + 5.2 + orbit);
+        targetFov = 45;
       } else if (leader.progressMeters >= L - 17) {
         this.setDirectorShot('Photo Finish');
         const finCamSt = getStationAtS(this.trackData, L + 9.5);
@@ -6534,20 +6808,21 @@ class MarbleRushApp {
     } else if (this.cameraMode === 'finish') {
       const finishSt = getStationAtS(this.trackData, L + 11.5);
       const lineSt = getStationAtS(this.trackData, Math.max(0, L - 5.5));
-      const podiumAnchor = getStationAtS(this.trackData, L + 12.5);
+      const podiumAnchor = getStationAtS(this.trackData, L + 13);
       const podTarget = podiumAnchor.pos
         .clone()
-        .addScaledVector(podiumAnchor.R, this.config.trackWidth * 0.38);
+        .addScaledVector(podiumAnchor.R, halfW + 5.2)
+        .addScaledVector(podiumAnchor.U, 2.0);
 
-      this._v3.copy(lineSt.pos).lerp(podTarget, this.winnerAnnounced ? 0.42 : 0.18).addScaledVector(lineSt.U, 1.0);
+      this._v3.copy(lineSt.pos).lerp(podTarget, this.winnerAnnounced ? 0.58 : 0.25).addScaledVector(lineSt.U, 1.1);
       if (leader && leader.progressMeters > L - 32 && leader.progressMeters < L + 3) {
         this._v3.lerp(leader.worldPos, 0.35);
       }
 
       this._v1
         .copy(finishSt.pos)
-        .addScaledVector(finishSt.U, 5.2)
-        .addScaledVector(finishSt.R, -(this.config.trackWidth * 0.52 + 3.0));
+        .addScaledVector(finishSt.U, 5.4)
+        .addScaledVector(finishSt.R, -(halfW + 3.8));
     }
 
     if (
@@ -6640,11 +6915,89 @@ class MarbleRushApp {
     this.frameId = window.setTimeout(poll, 5);
   }
 
+  togglePhysicsDebug() {
+    this.physicsDebugEnabled = !this.physicsDebugEnabled;
+    if (!this.physicsDebugEnabled) {
+      if (this.physicsDebugMesh) {
+        this.physicsDebugMesh.visible = false;
+      }
+      return;
+    }
+    this.updatePhysicsDebugGeometry();
+  }
+
+  updatePhysicsDebugGeometry() {
+    if (!this.world || !this.scene) return;
+    const { vertices, colors } = this.world.debugRender();
+    const vertexCount = vertices ? Math.floor(vertices.length / 3) : 0;
+
+    if (!this.physicsDebugMesh) {
+      const geo = new THREE.BufferGeometry();
+      const mat = new THREE.LineBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: true,
+      });
+      this.physicsDebugMesh = new THREE.LineSegments(geo, mat);
+      this.physicsDebugMesh.frustumCulled = false;
+      this.physicsDebugMesh.renderOrder = 999;
+      this.scene.add(this.physicsDebugMesh);
+    }
+
+    this.physicsDebugMesh.visible = vertexCount > 0;
+    if (vertexCount === 0) return;
+
+    const neededLen = vertexCount * 3;
+    const geo = this.physicsDebugMesh.geometry;
+    let posAttr = geo.getAttribute('position');
+    let colAttr = geo.getAttribute('color');
+
+    if (!posAttr || posAttr.array.length < neededLen) {
+      const cap = Math.max(neededLen, Math.floor((posAttr ? posAttr.array.length : 0) * 1.35));
+      const posArr = new Float32Array(cap);
+      this._debugRgbBuffer = new Float32Array(cap);
+      posAttr = new THREE.BufferAttribute(posArr, 3);
+      posAttr.setUsage(THREE.DynamicDrawUsage);
+      colAttr = new THREE.BufferAttribute(this._debugRgbBuffer, 3);
+      colAttr.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('position', posAttr);
+      geo.setAttribute('color', colAttr);
+    }
+
+    posAttr.array.set(vertices);
+    for (let i = 0, j = 0; i < vertexCount; i++, j += 4) {
+      const o = i * 3;
+      this._debugRgbBuffer[o] = colors[j] ?? 0.2;
+      this._debugRgbBuffer[o + 1] = colors[j + 1] ?? 0.9;
+      this._debugRgbBuffer[o + 2] = colors[j + 2] ?? 0.4;
+    }
+
+    posAttr.needsUpdate = true;
+    colAttr.needsUpdate = true;
+    geo.setDrawRange(0, vertexCount);
+  }
+
   renderActiveFrame() {
     const gl = this.renderer?.getContext?.();
     if (!gl || gl.isContextLost()) return;
 
-    this.renderer.render(this.scene, this.camera);
+    if (this.physicsDebugEnabled) {
+      this.updatePhysicsDebugGeometry();
+    } else if (this.physicsDebugMesh && this.physicsDebugMesh.visible) {
+      this.physicsDebugMesh.visible = false;
+    }
+
+    if (this.countdownMesh && this.countdownMesh.visible && this.hudScene && this.hudCamera) {
+      this.renderer.autoClear = false;
+      this.renderer.clear();
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.clearDepth();
+      this.renderer.render(this.hudScene, this.hudCamera);
+      this.renderer.autoClear = true;
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
     if (this.recorder.isRecording) {
       this.recorder.captureFrame();
     }
@@ -6655,27 +7008,53 @@ class MarbleRushApp {
     const tick = () => {
       try {
         const now = performance.now();
-        const dt = Math.min(0.085, Math.max(0.001, (now - this.lastFrameTime) / 1000));
+        const rawDtMs = Math.max(1, now - this.lastFrameTime);
+        const dt = Math.min(0.085, rawDtMs / 1000);
         this.lastFrameTime = now;
+
+        // Lightweight adaptive GPU protection so 8K/32K SSAA stays smooth without lag
+        if (!isSoftwareGl && !this.recorder.isRecording && this.adaptivePrScale > 0.48) {
+          if (rawDtMs > 44) {
+            this.slowFrameCount++;
+            if (this.slowFrameCount >= 42) {
+              this.adaptivePrScale = Math.max(0.45, this.adaptivePrScale * 0.72);
+              this.slowFrameCount = 0;
+              this.onResize();
+            }
+          } else if (rawDtMs < 24 && this.slowFrameCount > 0) {
+            this.slowFrameCount--;
+          }
+        }
 
         this.stepSimulation(dt);
         this.updateCamera(dt);
-        if (this.trails) {
-          this.trails.update(this.balls, this.camera.position);
-        }
         if (this.shared.boosterTex) {
-          this.shared.boosterTex.offset.y -= dt * 2.6;
+          this.shared.boosterTex.offset.y -= dt * 2.4;
         }
-        if (this.waterMesh) {
-          const baseY = this.waterMesh.userData.baseY ?? this.waterMesh.position.y;
-          this.waterMesh.position.y = baseY + Math.sin(now * 0.0014) * 0.045;
+        if (this.waterUniforms) {
+          this.waterUniforms.uTime.value = now * 0.001;
+        }
+        if (this.countdownMesh && this.countdownMesh.visible) {
+          this.countdownAnimTime += dt;
+          const ease = THREE.MathUtils.lerp(this.countdownMesh.scale.x, 1.0, Math.min(1, dt * 12));
+          this.countdownMesh.scale.setScalar(ease);
         }
 
-        // Gently animate claimed winner podium trophies
+        for (const flag of this.flagMeshes) {
+          const ph = flag.userData.phase || 0;
+          flag.rotation.y = Math.sin(now * 0.0042 + ph) * 0.18;
+        }
+
+        // Gently animate claimed winner podium trophies & metallic laurel halos
         for (const slot of this.podiumSlots) {
           if (slot.mesh.visible) {
-            slot.mesh.rotation.y += dt * 1.4;
-            slot.mesh.position.y = slot.baseY + Math.sin(now * 0.003 + slot.rank) * 0.09;
+            slot.mesh.rotation.y += dt * 1.35;
+            const bobY = slot.baseY + Math.sin(now * 0.003 + slot.rank) * 0.09;
+            slot.mesh.position.y = bobY;
+            if (slot.haloRing) {
+              slot.haloRing.position.y = bobY;
+              slot.haloRing.rotation.z += dt * 0.9;
+            }
           }
         }
 
@@ -6931,15 +7310,14 @@ class MarbleRushApp {
       this.dom.hudReplayBadge.classList.toggle('hidden', !isReplay);
     }
 
-    // Camera mode button active state, Follow-Up Angle button, Director shot tag, Letterbox & Free Cam
-    const camBtns = this.dom.cameraModeButtons.querySelectorAll('.cam-btn');
-    camBtns.forEach((btn) => {
-      btn.classList.toggle('active', btn.dataset.cam === this.cameraMode);
-    });
-    if (this.dom.btnCycleShot) {
+    // Camera mode select, Follow-Up Angle select, Director shot tag & Free Cam
+    if (this.dom.selectCameraMode) {
+      this.dom.selectCameraMode.value = this.cameraMode;
+    }
+    if (this.dom.selectFollowAngle) {
       const showCycle = !isReplay && this.cameraMode === 'leader';
-      this.dom.btnCycleShot.classList.toggle('hidden', !showCycle);
-      this.dom.btnCycleShot.textContent = `Angle: ${FOLLOW_SHOT_ANGLES[this.followShotAngle]}`;
+      this.dom.selectFollowAngle.classList.toggle('hidden', !showCycle);
+      this.dom.selectFollowAngle.value = String(this.followShotAngle);
     }
     if (this.dom.cameraShotLabel) {
       this.dom.cameraShotLabel.classList.toggle('hidden', isReplay || this.cameraMode !== 'director');
@@ -6949,31 +7327,57 @@ class MarbleRushApp {
       const showFreeBar = (!isReplay && this.cameraMode === 'free') || (isReplay && !this.replay.autoDirector);
       this.dom.freeCamBar.classList.toggle('hidden', !showFreeBar);
     }
-    if (this.dom.btnToggleQuality) {
-      this.dom.btnToggleQuality.textContent = this.ultraQuality ? 'High Detail' : 'Standard';
-      this.dom.btnToggleQuality.classList.toggle('active', this.ultraQuality);
-      if (isSoftwareGl) this.dom.btnToggleQuality.disabled = true;
+    if (this.dom.btnToggleMusic) {
+      this.dom.btnToggleMusic.textContent = this.sound.musicEnabled ? 'Music On' : 'Music Off';
+      this.dom.btnToggleMusic.classList.toggle('active', this.sound.musicEnabled);
+    }
+    if (this.dom.btnToggleSound) {
+      this.dom.btnToggleSound.textContent = this.sound.enabled ? 'Sound On' : 'Sound Off';
+      this.dom.btnToggleSound.classList.toggle('active', this.sound.enabled);
+    }
+    if (this.dom.selectQuality) {
+      this.dom.selectQuality.value = this.qualityPreset;
+      if (isSoftwareGl) this.dom.selectQuality.disabled = true;
     }
 
-    if (this.dom.replaySpeedGroup) {
-      this.dom.replaySpeedGroup.querySelectorAll('.cam-btn').forEach((btn) => {
-        btn.classList.toggle('active', Number(btn.dataset.rspeed) === this.replay.playbackSpeed);
-      });
+    if (this.dom.selectReplaySpeed) {
+      this.dom.selectReplaySpeed.value = String(this.replay.playbackSpeed);
     }
-    if (this.dom.btnReplaySlowmo) {
-      this.dom.btnReplaySlowmo.classList.toggle('active', this.replay.autoSlowMo);
+    if (this.dom.inputReplaySlowmo) {
+      this.dom.inputReplaySlowmo.checked = this.replay.autoSlowMo;
     }
-    if (this.dom.btnReplayAutocam) {
-      this.dom.btnReplayAutocam.classList.toggle('active', this.replay.autoDirector);
+    if (this.dom.inputReplayAutocam) {
+      this.dom.inputReplayAutocam.checked = this.replay.autoDirector;
     }
     if (isReplay) {
       this.updateReplayHud(false);
     }
   }
 
-  setUltraQuality(enabled) {
+  setQualityPreset(presetKey) {
     if (isSoftwareGl) return;
-    this.ultraQuality = enabled;
+    const key = QUALITY_PRESETS[presetKey] ? presetKey : 'master32k';
+    const qCfg = QUALITY_PRESETS[key];
+    this.qualityPreset = key;
+    this.adaptivePrScale = 1.0;
+    this.slowFrameCount = 0;
+
+    if (this.keyLight && this.renderer) {
+      const maxTex = this.renderer.capabilities.maxTextureSize || 4096;
+      const shadowRes = Math.min(qCfg.shadowSize, maxTex);
+      if (
+        this.keyLight.shadow.mapSize.x !== shadowRes ||
+        this.keyLight.shadow.mapSize.y !== shadowRes
+      ) {
+        this.keyLight.shadow.mapSize.set(shadowRes, shadowRes);
+        if (this.keyLight.shadow.map) {
+          this.keyLight.shadow.map.dispose();
+          this.keyLight.shadow.map = null;
+        }
+        this.keyLight.shadow.needsUpdate = true;
+      }
+    }
+
     this.onResize();
     this.syncUiState();
   }
@@ -6987,7 +7391,7 @@ class MarbleRushApp {
   setConfigDrawerOpen(open) {
     this.dom.configDrawer.classList.toggle('collapsed', !open);
     this.dom.btnToggleConfig.setAttribute('aria-expanded', String(open));
-    this.dom.btnToggleConfig.textContent = open ? 'Hide Setup' : 'Configure';
+    this.dom.btnToggleConfig.textContent = open ? 'Hide Setup' : 'Setup';
   }
 
   setCameraMode(mode) {
@@ -7055,14 +7459,12 @@ class MarbleRushApp {
         this.ballColors[existingIdx] = prevColor;
         if (this.balls[existingIdx]) {
           this.balls[existingIdx].color = prevColor;
-          this.balls[existingIdx].mesh.material.color.set(prevColor);
-          this.balls[existingIdx].mesh.material.emissive.set(prevColor);
+          setRichMarbleColor(this.balls[existingIdx].mesh.material.color, prevColor);
         }
         this.ballColors[index] = normalized;
         if (this.balls[index]) {
           this.balls[index].color = normalized;
-          this.balls[index].mesh.material.color.set(normalized);
-          this.balls[index].mesh.material.emissive.set(normalized);
+          setRichMarbleColor(this.balls[index].mesh.material.color, normalized);
         }
         this.renderBallColorEditor();
         this.updateLeaderboard(false);
@@ -7074,8 +7476,7 @@ class MarbleRushApp {
     hexLabel.textContent = normalized.toUpperCase();
     if (this.balls[index]) {
       this.balls[index].color = normalized;
-      this.balls[index].mesh.material.color.set(normalized);
-      this.balls[index].mesh.material.emissive.set(normalized);
+      setRichMarbleColor(this.balls[index].mesh.material.color, normalized);
     }
     this.updateLeaderboard(false);
   }
@@ -7087,66 +7488,57 @@ class MarbleRushApp {
 
     this.dom.inputBallSpeed.value = String(this.config.speedMultiplier);
     this.dom.valBallSpeed.textContent = `${this.config.speedMultiplier.toFixed(1)}x`;
-    this.dom.speedPresetRow.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', Number(b.dataset.speed) === this.config.speedMultiplier);
-    });
 
-    this.dom.valDistance.textContent = `${this.config.distanceMeters} m`;
-    this.dom.distancePresets.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.dist === this.config.distancePreset);
-    });
+    if (this.dom.selectDistance) this.dom.selectDistance.value = this.config.distancePreset;
     this.dom.customDistanceWrap.classList.toggle(
       'hidden',
       this.config.distancePreset !== 'custom'
     );
-
-    if (this.dom.darknessPresets) {
-      this.dom.darknessPresets.querySelectorAll('.seg-btn').forEach((b) => {
-        b.classList.toggle('active', b.dataset.darkness === this.config.colorDarkness);
-      });
+    if (this.config.distancePreset === 'custom') {
+      this.dom.inputCustomDistance.value = String(this.config.distanceMeters);
     }
 
-    this.dom.mapPresetGroup.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.map === this.config.mapPreset);
-    });
+    if (this.dom.selectDarkness) this.dom.selectDarkness.value = this.config.colorDarkness;
+    if (this.dom.selectMap) this.dom.selectMap.value = this.config.mapPreset;
     this.dom.inputCycleMap.checked = this.config.cycleMapOnNewTrack;
 
-    this.dom.trackTypeGroup.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.track === this.config.trackType);
-    });
+    if (this.dom.selectTrack) this.dom.selectTrack.value = this.config.trackType;
 
     this.dom.inputTrackWidth.value = String(this.config.trackWidth);
     this.dom.valTrackWidth.textContent = `${this.config.trackWidth} m`;
 
-    this.dom.gravityPresets.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.gravity === this.config.gravityPreset);
-    });
-    this.dom.frictionPresets.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.friction === this.config.frictionPreset);
-    });
+    if (this.dom.selectGravity) this.dom.selectGravity.value = this.config.gravityPreset;
+    if (this.dom.selectFriction) this.dom.selectFriction.value = this.config.frictionPreset;
     this.dom.inputExperimentalVariance.checked = this.config.experimentalVariance;
 
     this.dom.inputHurdleCount.value = String(this.config.hurdleCount);
     this.dom.inputHurdleCountNum.value = String(this.config.hurdleCount);
     this.dom.valHurdleCount.textContent = String(this.config.hurdleCount);
 
-    this.dom.hurdleSizeGroup.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.size === this.config.hurdleSize);
-    });
+    if (this.dom.selectHurdleSize) this.dom.selectHurdleSize.value = this.config.hurdleSize;
     this.dom.inputRandomHurdles.checked = this.config.randomHurdles;
 
     this.dom.obstacleTypesList.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
       cb.checked = this.config.enabledObstacles.has(cb.value);
     });
 
-    this.dom.colorPresetsGroup.querySelectorAll('.seg-btn').forEach((b) => {
-      b.classList.toggle('active', b.dataset.palette === this.config.palette);
-    });
+    if (this.dom.selectPalette) this.dom.selectPalette.value = this.config.palette;
     this.dom.inputAllowDuplicates.checked = this.config.allowDuplicateColors;
+    if (this.dom.inputMusicEnabled) this.dom.inputMusicEnabled.checked = this.sound.musicEnabled;
+    if (this.dom.inputSoundEnabled) this.dom.inputSoundEnabled.checked = this.sound.enabled;
   }
 
   bindUiEvents() {
     this.dom.btnRetryInit.addEventListener('click', () => window.location.reload());
+
+    // Unlock gentle background chord music on first user gesture
+    window.addEventListener(
+      'pointerdown',
+      () => {
+        if (this.sound.musicEnabled) this.sound.ensureContext(true);
+      },
+      { once: true }
+    );
 
     // Drawer tabs
     document.querySelectorAll('.tab-btn').forEach((tab) => {
@@ -7183,19 +7575,43 @@ class MarbleRushApp {
 
     this.dom.btnViewResults.addEventListener('click', () => this.openResultsModal());
 
-    if (this.dom.btnToggleQuality) {
-      this.dom.btnToggleQuality.addEventListener('click', () => {
-        this.setUltraQuality(!this.ultraQuality);
+    if (this.dom.selectQuality) {
+      this.dom.selectQuality.addEventListener('change', (e) => {
+        this.setQualityPreset(e.target.value);
       });
     }
 
+    const applyMusicToggle = (enabled) => {
+      this.sound.setMusicEnabled(enabled);
+      if (this.dom.inputMusicEnabled) this.dom.inputMusicEnabled.checked = this.sound.musicEnabled;
+      this.syncUiState();
+    };
+    if (this.dom.btnToggleMusic) {
+      this.dom.btnToggleMusic.addEventListener('click', () => {
+        applyMusicToggle(!this.sound.musicEnabled);
+      });
+    }
+    if (this.dom.inputMusicEnabled) {
+      this.dom.inputMusicEnabled.addEventListener('change', (e) => {
+        applyMusicToggle(e.target.checked);
+      });
+    }
+
+    const applySoundToggle = (enabled) => {
+      this.sound.enabled = Boolean(enabled);
+      if (this.sound.enabled) this.sound.ensureContext(true);
+      else this.sound.updateRollingBed(0, false);
+      if (this.dom.inputSoundEnabled) this.dom.inputSoundEnabled.checked = this.sound.enabled;
+      this.syncUiState();
+    };
     this.dom.btnToggleSound.addEventListener('click', () => {
-      this.sound.enabled = !this.sound.enabled;
-      this.dom.btnToggleSound.textContent = this.sound.enabled ? 'Sound On' : 'Sound Off';
-      if (!this.sound.enabled) {
-        this.sound.updateRollingBed(0, false);
-      }
+      applySoundToggle(!this.sound.enabled);
     });
+    if (this.dom.inputSoundEnabled) {
+      this.dom.inputSoundEnabled.addEventListener('change', (e) => {
+        applySoundToggle(e.target.checked);
+      });
+    }
 
     // Ball count
     const applyBallCount = (val) => {
@@ -7230,14 +7646,11 @@ class MarbleRushApp {
       this.syncSettingsControlsToDom();
     };
     this.dom.inputBallSpeed.addEventListener('input', (e) => applySpeed(e.target.value));
-    this.dom.speedPresetRow.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => applySpeed(btn.dataset.speed));
-    });
 
     // Finish-line distance
-    this.dom.distancePresets.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const preset = btn.dataset.dist;
+    if (this.dom.selectDistance) {
+      this.dom.selectDistance.addEventListener('change', (e) => {
+        const preset = e.target.value;
         this.config.distancePreset = preset;
         if (preset !== 'custom') {
           this.config.distanceMeters = Number(preset);
@@ -7251,7 +7664,7 @@ class MarbleRushApp {
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: false });
       });
-    });
+    }
     this.dom.inputCustomDistance.addEventListener('change', (e) => {
       this.config.distancePreset = 'custom';
       this.config.distanceMeters = THREE.MathUtils.clamp(Number(e.target.value) || 120, 30, 350);
@@ -7260,37 +7673,35 @@ class MarbleRushApp {
       this.rebuildTrackAndRace({ preserveCamera: false });
     });
 
-    // Colour Darkness preset
-    if (this.dom.darknessPresets) {
-      this.dom.darknessPresets.querySelectorAll('.seg-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          this.config.colorDarkness = btn.dataset.darkness;
-          this.syncSettingsControlsToDom();
-          this.rebuildTrackAndRace({ preserveCamera: true });
-        });
+    // Colour Depth preset
+    if (this.dom.selectDarkness) {
+      this.dom.selectDarkness.addEventListener('change', (e) => {
+        this.config.colorDarkness = e.target.value;
+        this.syncSettingsControlsToDom();
+        this.rebuildTrackAndRace({ preserveCamera: true });
       });
     }
 
     // Arena Map & Environment presets
-    this.dom.mapPresetGroup.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.mapPreset = btn.dataset.map;
+    if (this.dom.selectMap) {
+      this.dom.selectMap.addEventListener('change', (e) => {
+        this.config.mapPreset = e.target.value;
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: true });
       });
-    });
+    }
     this.dom.inputCycleMap.addEventListener('change', (e) => {
       this.config.cycleMapOnNewTrack = e.target.checked;
     });
 
     // Track type
-    this.dom.trackTypeGroup.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.trackType = btn.dataset.track;
+    if (this.dom.selectTrack) {
+      this.dom.selectTrack.addEventListener('change', (e) => {
+        this.config.trackType = e.target.value;
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: false });
       });
-    });
+    }
 
     // Track width
     this.dom.inputTrackWidth.addEventListener('input', (e) => {
@@ -7303,20 +7714,20 @@ class MarbleRushApp {
     });
 
     // Gravity & Friction
-    this.dom.gravityPresets.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.gravityPreset = btn.dataset.gravity;
+    if (this.dom.selectGravity) {
+      this.dom.selectGravity.addEventListener('change', (e) => {
+        this.config.gravityPreset = e.target.value;
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: true });
       });
-    });
-    this.dom.frictionPresets.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.frictionPreset = btn.dataset.friction;
+    }
+    if (this.dom.selectFriction) {
+      this.dom.selectFriction.addEventListener('change', (e) => {
+        this.config.frictionPreset = e.target.value;
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: true });
       });
-    });
+    }
 
     this.dom.inputExperimentalVariance.addEventListener('change', (e) => {
       this.config.experimentalVariance = e.target.checked;
@@ -7336,13 +7747,13 @@ class MarbleRushApp {
     this.dom.inputHurdleCount.addEventListener('change', (e) => applyHurdleCount(e.target.value));
     this.dom.inputHurdleCountNum.addEventListener('change', (e) => applyHurdleCount(e.target.value));
 
-    this.dom.hurdleSizeGroup.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.hurdleSize = btn.dataset.size;
+    if (this.dom.selectHurdleSize) {
+      this.dom.selectHurdleSize.addEventListener('change', (e) => {
+        this.config.hurdleSize = e.target.value;
         this.syncSettingsControlsToDom();
         this.rebuildTrackAndRace({ preserveCamera: true });
       });
-    });
+    }
 
     this.dom.inputRandomHurdles.addEventListener('change', (e) => {
       this.config.randomHurdles = e.target.checked;
@@ -7369,9 +7780,9 @@ class MarbleRushApp {
     });
 
     // Ball color presets & duplicate toggle
-    this.dom.colorPresetsGroup.querySelectorAll('.seg-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.config.palette = btn.dataset.palette;
+    if (this.dom.selectPalette) {
+      this.dom.selectPalette.addEventListener('change', (e) => {
+        this.config.palette = e.target.value;
         this.ballColors = buildBallColorsForPalette(
           this.config.palette,
           this.config.ballCount,
@@ -7379,14 +7790,13 @@ class MarbleRushApp {
         );
         for (let i = 0; i < this.balls.length; i++) {
           this.balls[i].color = this.ballColors[i];
-          this.balls[i].mesh.material.color.set(this.ballColors[i]);
-          this.balls[i].mesh.material.emissive.set(this.ballColors[i]);
+          setRichMarbleColor(this.balls[i].mesh.material.color, this.ballColors[i]);
         }
         this.syncSettingsControlsToDom();
         this.renderBallColorEditor();
         this.updateLeaderboard(false);
       });
-    });
+    }
 
     this.dom.inputAllowDuplicates.addEventListener('change', (e) => {
       this.config.allowDuplicateColors = e.target.checked;
@@ -7400,8 +7810,7 @@ class MarbleRushApp {
             this.ballColors[i] = c;
             if (this.balls[i]) {
               this.balls[i].color = c;
-              this.balls[i].mesh.material.color.set(c);
-              this.balls[i].mesh.material.emissive.set(c);
+              setRichMarbleColor(this.balls[i].mesh.material.color, c);
             }
           }
           used.add(c);
@@ -7411,12 +7820,18 @@ class MarbleRushApp {
       }
     });
 
-    // Camera modes, Follow-Up Angle cycling & Clean HUD toggle
-    this.dom.cameraModeButtons.querySelectorAll('.cam-btn').forEach((btn) => {
-      btn.addEventListener('click', () => this.setCameraMode(btn.dataset.cam));
-    });
-    if (this.dom.btnCycleShot) {
-      this.dom.btnCycleShot.addEventListener('click', () => this.cycleFollowShot());
+    // Camera modes, Follow-Up Angle dropdown & Clean HUD toggle
+    if (this.dom.selectCameraMode) {
+      this.dom.selectCameraMode.addEventListener('change', (e) => {
+        this.setCameraMode(e.target.value);
+      });
+    }
+    if (this.dom.selectFollowAngle) {
+      this.dom.selectFollowAngle.addEventListener('change', (e) => {
+        this.followShotAngle = Number(e.target.value) || 0;
+        this.sound.playCameraCut();
+        this.syncUiState();
+      });
     }
 
     const toggleZenHud = () => {
@@ -7485,23 +7900,21 @@ class MarbleRushApp {
     if (this.dom.btnReplayNextHl) {
       this.dom.btnReplayNextHl.addEventListener('click', () => this.jumpToReplayHighlight(1));
     }
-    if (this.dom.replaySpeedGroup) {
-      this.dom.replaySpeedGroup.querySelectorAll('.cam-btn').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          this.replay.playbackSpeed = Number(btn.dataset.rspeed) || 1;
-          this.syncUiState();
-        });
-      });
-    }
-    if (this.dom.btnReplaySlowmo) {
-      this.dom.btnReplaySlowmo.addEventListener('click', () => {
-        this.replay.autoSlowMo = !this.replay.autoSlowMo;
+    if (this.dom.selectReplaySpeed) {
+      this.dom.selectReplaySpeed.addEventListener('change', (e) => {
+        this.replay.playbackSpeed = Number(e.target.value) || 1;
         this.syncUiState();
       });
     }
-    if (this.dom.btnReplayAutocam) {
-      this.dom.btnReplayAutocam.addEventListener('click', () => {
-        this.replay.autoDirector = !this.replay.autoDirector;
+    if (this.dom.inputReplaySlowmo) {
+      this.dom.inputReplaySlowmo.addEventListener('change', (e) => {
+        this.replay.autoSlowMo = e.target.checked;
+        this.syncUiState();
+      });
+    }
+    if (this.dom.inputReplayAutocam) {
+      this.dom.inputReplayAutocam.addEventListener('change', (e) => {
+        this.replay.autoDirector = e.target.checked;
         if (!this.replay.autoDirector) {
           this.controls.target.copy(this.smoothCamTarget);
           this.controls.update();
@@ -7554,7 +7967,17 @@ class MarbleRushApp {
       }
       this.keysPressed.add(e.code);
 
-      if (e.key === 'h' || e.key === 'H') toggleZenHud();
+      if (!e.repeat && (e.key === 'h' || e.key === 'H')) toggleZenHud();
+      else if (
+        !e.repeat &&
+        (e.key === 'd' || e.key === 'D') &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        (e.shiftKey || !(this.cameraMode === 'free' || (this.raceState === 'REPLAY' && !this.replay.autoDirector)))
+      ) {
+        this.togglePhysicsDebug();
+      }
       else if (this.raceState === 'REPLAY' && e.code === 'Escape') {
         this.exitReplayMode(false);
       } else if (this.raceState === 'REPLAY' && e.code === 'Space' && this.replay.autoDirector) {
