@@ -516,6 +516,7 @@
             <option value="director">Broadcast Director</option>
             <option value="leader">Follow Leader</option>
             <option value="topdown">Top-Down Full Track</option>
+            <option value="drone_top">Drone Top Follow</option>
             <option value="finish">Finish &amp; Podium</option>
             <option value="free">Free Roam</option>
           </select>
@@ -591,6 +592,9 @@
               <input id="input-replay-autocam" type="checkbox" checked />
               <span>Auto Cuts</span>
             </label>
+            <button id="btn-replay-record" class="cam-btn" type="button" title="Record Cinematic Highlight Video from start">
+              Record Video 2
+            </button>
             <button id="btn-replay-exit" class="cam-btn cam-btn-exit" type="button">
               Exit Replay
             </button>
@@ -641,15 +645,33 @@
 
         <div id="video-export-panel" class="video-export-panel hidden">
           <div class="video-export-info">
-            <span class="video-export-title">Full Gameplay Recording</span>
+            <span class="video-export-title">Video 1 · Full Gameplay Recording</span>
             <span id="video-export-meta" class="video-export-meta mono">Preparing video...</span>
           </div>
           <div class="video-export-btns">
             <button id="btn-preview-video" class="btn btn-surface btn-sm" type="button">
-              Preview Replay
+              Preview Video 1
             </button>
             <button id="btn-export-video" class="btn btn-accent btn-sm" type="button">
-              Export Game Video
+              Export Video 1
+            </button>
+          </div>
+        </div>
+
+        <div id="video-export-cinematic-panel" class="video-export-panel hidden">
+          <div class="video-export-info">
+            <span class="video-export-title">Video 2 · Cinematic Shots Recording</span>
+            <span id="video-cinematic-meta" class="video-export-meta mono">Auto-cut highlights + winner &amp; leaderboard</span>
+          </div>
+          <div class="video-export-btns">
+            <button id="btn-record-cinematic" class="btn btn-surface btn-sm" type="button">
+              Record Cinematic
+            </button>
+            <button id="btn-preview-cinematic" class="btn btn-surface btn-sm hidden" type="button">
+              Preview Video 2
+            </button>
+            <button id="btn-export-cinematic" class="btn btn-accent btn-sm hidden" type="button">
+              Export Video 2
             </button>
           </div>
         </div>

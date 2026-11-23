@@ -552,6 +552,12 @@ class SoundEngine {
     this.lastHurdleAt = 0;
     this.lastWallAt = 0;
     this.lastWhooshAt = 0;
+    this.crowdSource = null;
+    this.crowdFilterLow = null;
+    this.crowdFilterHigh = null;
+    this.crowdMurmurGain = null;
+    this.crowdCheerGain = null;
+    this.lastCrowdSpikeAt = 0;
   }
 
   ensureContext(forceForMusic = false) {
@@ -599,6 +605,7 @@ class SoundEngine {
       this.noiseBuffer = this.createNoiseBuffer(0.14);
       this.loopNoiseBuffer = this.createPinkLoopBuffer(1.6);
       this.initRollingBed();
+      this.initCrowdBed();
     }
     if (this.ctx.state === 'suspended') {
       this.ctx.resume().catch(() => {});
@@ -768,6 +775,92 @@ class SoundEngine {
     this.rollFilter.frequency.setTargetAtTime(targetFilterFreq, now, 0.05);
     this.rollOsc.frequency.setTargetAtTime(targetOscFreq, now, 0.05);
     this.rollOscGain.gain.setTargetAtTime(targetOscGain, now, 0.05);
+  }
+
+  initCrowdBed() {
+    if (!this.ctx || !this.loopNoiseBuffer || this.crowdSource) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.loopNoiseBuffer;
+    src.loop = true;
+    src.playbackRate.value = 0.88;
+
+    // Warm lower stadium murmur band
+    const fLow = this.ctx.createBiquadFilter();
+    fLow.type = 'bandpass';
+    fLow.frequency.value = 340;
+    fLow.Q.value = 0.72;
+    const gLow = this.ctx.createGain();
+    gLow.gain.value = 0.0001;
+
+    // Bright upper cheering formant band
+    const fHigh = this.ctx.createBiquadFilter();
+    fHigh.type = 'bandpass';
+    fHigh.frequency.value = 920;
+    fHigh.Q.value = 0.95;
+    const gHigh = this.ctx.createGain();
+    gHigh.gain.value = 0.0001;
+
+    src.connect(fLow);
+    fLow.connect(gLow);
+    gLow.connect(this.masterComp);
+
+    src.connect(fHigh);
+    fHigh.connect(gHigh);
+    gHigh.connect(this.masterComp);
+
+    src.start();
+
+    this.crowdSource = src;
+    this.crowdFilterLow = fLow;
+    this.crowdFilterHigh = fHigh;
+    this.crowdMurmurGain = gLow;
+    this.crowdCheerGain = gHigh;
+  }
+
+  updateCrowdExcitement(excitement01, active) {
+    if (!this.ctx || !this.crowdMurmurGain || !this.crowdCheerGain) return;
+    const now = this.ctx.currentTime;
+    if (!this.enabled || !active) {
+      this.crowdMurmurGain.gain.setTargetAtTime(0.0001, now, 0.16);
+      this.crowdCheerGain.gain.setTargetAtTime(0.0001, now, 0.16);
+      return;
+    }
+    const e = Math.min(1, Math.max(0, excitement01 || 0));
+    const murmurGain = 0.007 + e * 0.044;
+    const cheerGain = 0.002 + Math.pow(e, 1.3) * 0.105;
+    this.crowdMurmurGain.gain.setTargetAtTime(murmurGain, now, 0.14);
+    this.crowdCheerGain.gain.setTargetAtTime(cheerGain, now, 0.12);
+    this.crowdFilterLow.frequency.setTargetAtTime(320 + e * 210, now, 0.14);
+    this.crowdFilterHigh.frequency.setTargetAtTime(760 + e * 980, now, 0.12);
+  }
+
+  playCrowdCheerSpike(strength = 0.8) {
+    if (!this.enabled) return;
+    const nowMs = performance.now();
+    if (nowMs - this.lastCrowdSpikeAt < 420) return;
+    this.lastCrowdSpikeAt = nowMs;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.loopNoiseBuffer || !this.masterComp) return;
+    const now = ctx.currentTime;
+    const s = Math.min(1.1, Math.max(0.25, strength));
+    const src = ctx.createBufferSource();
+    src.buffer = this.loopNoiseBuffer;
+    src.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(640, now);
+    bp.frequency.exponentialRampToValueAtTime(1480, now + 0.35);
+    bp.frequency.exponentialRampToValueAtTime(920, now + 1.05);
+    bp.Q.value = 0.85;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.075 * s, now + 0.18);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.15);
+    src.connect(bp);
+    bp.connect(gain);
+    gain.connect(this.masterComp);
+    src.start(now);
+    src.stop(now + 1.2);
   }
 
   getAudioTrack() {
@@ -2308,6 +2401,7 @@ class MarbleRushApp {
     this.canvas = document.getElementById('race-canvas');
     this.sound = new SoundEngine();
     this.recorder = new GameplayRecorder(this.canvas, this.sound);
+    this.cinematicRecorder = new GameplayRecorder(this.canvas, this.sound);
 
     // State
     this.config = {
@@ -2346,6 +2440,12 @@ class MarbleRushApp {
     this.resultsDismissed = false;
     this.trackSeed = 0;
     this.recordedVideoInfo = null;
+    this.recordedCinematicInfo = null;
+    this.isRecordingCinematic = false;
+    this.gameplayEndHold = 0;
+    this.cinematicEndHold = 0;
+    this.crowdExcitement = 0;
+    this.lastReplayWinnerBannerId = -1;
     this.qualityPreset = isSoftwareGl ? 'standard' : 'master32k';
     this.adaptivePrScale = 1.0;
     this.slowFrameCount = 0;
@@ -2378,12 +2478,17 @@ class MarbleRushApp {
     this.countdownCtx = null;
     this.countdownTex = null;
     this.countdownAnimTime = 0;
+    this.hudOverlayMesh = null;
+    this.hudOverlayCanvas = null;
+    this.hudOverlayCtx = null;
+    this.hudOverlayTex = null;
 
     this.trackData = null;
     this.balls = [];
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
     this.flagMeshes = [];
+    this.crowdSpectatorGroups = [];
     this.startGate = null;
     this.startLightPods = [];
     this.podiumSlots = [];
@@ -2519,6 +2624,7 @@ class MarbleRushApp {
       selectReplaySpeed: document.getElementById('select-replay-speed'),
       inputReplaySlowmo: document.getElementById('input-replay-slowmo'),
       inputReplayAutocam: document.getElementById('input-replay-autocam'),
+      btnReplayRecord: document.getElementById('btn-replay-record'),
       btnReplayExit: document.getElementById('btn-replay-exit'),
 
       countdownOverlay: document.getElementById('countdown-overlay'),
@@ -2537,6 +2643,11 @@ class MarbleRushApp {
       videoExportMeta: document.getElementById('video-export-meta'),
       btnPreviewVideo: document.getElementById('btn-preview-video'),
       btnExportVideo: document.getElementById('btn-export-video'),
+      videoExportCinematicPanel: document.getElementById('video-export-cinematic-panel'),
+      videoCinematicMeta: document.getElementById('video-cinematic-meta'),
+      btnRecordCinematic: document.getElementById('btn-record-cinematic'),
+      btnPreviewCinematic: document.getElementById('btn-preview-cinematic'),
+      btnExportCinematic: document.getElementById('btn-export-cinematic'),
       videoPreviewWrap: document.getElementById('video-preview-wrap'),
       replayVideoPlayer: document.getElementById('replay-video-player'),
       resultsTableBody: document.getElementById('results-table-body'),
@@ -2725,6 +2836,26 @@ class MarbleRushApp {
     this.countdownMesh.visible = false;
     this.hudScene.add(this.countdownMesh);
 
+    // Full-frame WebGL Broadcast Overlay (1st Place Callout + End Leaderboard rendered directly into recorded videos)
+    this.hudOverlayCanvas = document.createElement('canvas');
+    this.hudOverlayCanvas.width = isSoftwareGl ? 960 : 1920;
+    this.hudOverlayCanvas.height = isSoftwareGl ? 540 : 1080;
+    this.hudOverlayCtx = this.hudOverlayCanvas.getContext('2d');
+    this.hudOverlayTex = new THREE.CanvasTexture(this.hudOverlayCanvas);
+    this.hudOverlayTex.colorSpace = THREE.SRGBColorSpace;
+    this.hudOverlayTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    const ovMat = new THREE.MeshBasicMaterial({
+      map: this.hudOverlayTex,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.hudOverlayMesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * (16 / 9), 2), ovMat);
+    this.hudOverlayMesh.position.set(0, 0, -1.25);
+    this.hudOverlayMesh.scale.setScalar(Math.min(aspect / (16 / 9), 1));
+    this.hudOverlayMesh.visible = false;
+    this.hudScene.add(this.hudOverlayMesh);
+
     // Canvas WebGL context safety
     this.canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
@@ -2892,6 +3023,9 @@ class MarbleRushApp {
       this.hudCamera.bottom = -1;
       this.hudCamera.updateProjectionMatrix();
     }
+    if (this.hudOverlayMesh) {
+      this.hudOverlayMesh.scale.setScalar(Math.min(aspect / (16 / 9), 1));
+    }
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
   }
@@ -2935,16 +3069,27 @@ class MarbleRushApp {
   }
 
   rebuildTrackAndRace({ preserveCamera = false } = {}) {
-    const wasRecording = this.recorder.isRecording;
+    const wasRecording = this.recorder.isRecording || this.cinematicRecorder.isRecording;
     this.recorder.discard();
+    this.cinematicRecorder.discard();
     if (wasRecording) this.onResize();
     this.recordedVideoInfo = null;
+    this.recordedCinematicInfo = null;
+    this.isRecordingCinematic = false;
+    this.gameplayEndHold = 0;
+    this.cinematicEndHold = 0;
+    this.crowdExcitement = 0;
+    this.lastReplayWinnerBannerId = -1;
     this.dom.hudRecBadge.classList.add('hidden');
     this.dom.videoPreviewWrap.classList.add('hidden');
     this.dom.replayVideoPlayer.removeAttribute('src');
     this.dom.videoExportPanel.classList.add('hidden');
+    if (this.dom.videoExportCinematicPanel) {
+      this.dom.videoExportCinematicPanel.classList.add('hidden');
+    }
 
     if (this.countdownMesh) this.countdownMesh.visible = false;
+    this.hideCanvasOverlay();
     if (this.contactShadowMesh) {
       this._dummy.scale.set(0, 0, 0);
       this._dummy.updateMatrix();
@@ -2972,6 +3117,7 @@ class MarbleRushApp {
     this.kinematicHurdles = [];
     this.hurdleStationsS = [];
     this.flagMeshes = [];
+    this.crowdSpectatorGroups = [];
     this.waterMesh = null;
     this.waterUniforms = null;
     this.podiumSlots = [];
@@ -2980,6 +3126,7 @@ class MarbleRushApp {
     this.startGate = null;
     this.colliderMeta.clear();
     this.sound.updateRollingBed(0, false);
+    this.sound.updateCrowdExcitement(0, false);
 
     this.dom.countdownOverlay.classList.add('hidden');
     this.dom.winnerToast.classList.add('hidden');
@@ -3358,6 +3505,41 @@ class MarbleRushApp {
     this.colliderMeta.set(shieldLCol.handle, { kind: 'wall' });
   }
 
+  getPlazaPadAnchors() {
+    const L = this.config.distanceMeters;
+    const halfW = this.config.trackWidth * 0.5;
+    const podSt = getStationAtS(this.trackData, L + 13);
+    const podPos = podSt.pos
+      .clone()
+      .addScaledVector(podSt.R, halfW + 5.2)
+      .addScaledVector(podSt.U, -0.35);
+
+    const standSt = getStationAtS(this.trackData, L + 9);
+    const standPos = standSt.pos
+      .clone()
+      .addScaledVector(standSt.R, -(halfW + 6.2))
+      .addScaledVector(standSt.U, -0.35);
+
+    const hasMidStand = L >= 45;
+    const midStandSt = hasMidStand ? getStationAtS(this.trackData, L * 0.52) : null;
+    const midStandPos = midStandSt
+      ? midStandSt.pos
+          .clone()
+          .addScaledVector(midStandSt.R, -(halfW + 6.0))
+          .addScaledVector(midStandSt.U, -0.35)
+      : null;
+
+    return {
+      podSt,
+      podPos,
+      standSt,
+      standPos,
+      hasMidStand,
+      midStandSt,
+      midStandPos,
+    };
+  }
+
   buildEnvironmentFloorAndSupports(mapCfg) {
     const { stations, bounds } = this.trackData;
     const mapKey = this.config.mapPreset || 'expedition';
@@ -3366,6 +3548,21 @@ class MarbleRushApp {
     const centerZ = bounds.centerZ;
     const baseElevation = bounds.minY - 3.6;
     const waterY = bounds.minY + (mapCfg?.waterLevelOffset ?? -2.6);
+
+    const anchors = this.getPlazaPadAnchors();
+    const plazaPads = [
+      { x: anchors.podPos.x, y: anchors.podPos.y - 0.14, z: anchors.podPos.z, inner: 10.5, outer: 22.0 },
+      { x: anchors.standPos.x, y: anchors.standPos.y - 0.14, z: anchors.standPos.z, inner: 10.2, outer: 21.5 },
+    ];
+    if (anchors.hasMidStand && anchors.midStandPos) {
+      plazaPads.push({
+        x: anchors.midStandPos.x,
+        y: anchors.midStandPos.y - 0.14,
+        z: anchors.midStandPos.z,
+        inner: 9.2,
+        outer: 19.5,
+      });
+    }
 
     const groundSize = Math.max(760, Math.max(bounds.spanX, bounds.spanZ) * 4.4);
     const segs = isSoftwareGl ? 56 : 84;
@@ -3469,6 +3666,16 @@ class MarbleRushApp {
       if (distToTrack < shoulderReach) {
         const tCarve = THREE.MathUtils.smoothstep(distToTrack, corridorHalf, shoulderReach);
         wy = THREE.MathUtils.lerp(roadbedY, wy, tCarve);
+      }
+
+      // Grade flat level plazas beneath Victory Pavilion podium & spectator grandstands so terrain never clips/merges
+      for (let pIdx = 0; pIdx < plazaPads.length; pIdx++) {
+        const pad = plazaPads[pIdx];
+        const dPad = Math.hypot(wx - pad.x, wz - pad.z);
+        if (dPad < pad.outer) {
+          const tPad = THREE.MathUtils.smoothstep(dPad, pad.inner, pad.outer);
+          wy = THREE.MathUtils.lerp(pad.y, wy, tPad);
+        }
       }
 
       posAttr.setY(v, wy);
@@ -3728,10 +3935,10 @@ class MarbleRushApp {
       }
     }
 
-    this.buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed);
+    this.buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed, plazaPads);
   }
 
-  buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed) {
+  buildOpenWorldProps(mapKey, mapCfg, bounds, coarse, sampleHeight, waterY, seed, plazaPads = []) {
     const rng = mulberry32(seed * 7919 + 31);
     const halfW = this.config.trackWidth * 0.5;
     const safeClearance = halfW + 6.8;
@@ -3780,6 +3987,18 @@ class MarbleRushApp {
         }
       }
       if (minDistSq < safeClearanceSq) continue;
+
+      let nearPlaza = false;
+      for (let p = 0; p < plazaPads.length; p++) {
+        const pad = plazaPads[p];
+        const dx = wx - pad.x;
+        const dz = wz - pad.z;
+        if (dx * dx + dz * dz < pad.inner * pad.inner) {
+          nearPlaza = true;
+          break;
+        }
+      }
+      if (nearPlaza) continue;
 
       const wy = sampleHeight(wx, wz);
       if (hasWater && wy < waterY + 0.65) continue;
@@ -4220,7 +4439,6 @@ class MarbleRushApp {
     this.trackGroup.add(archGroup);
 
     // Championship Victory Pavilion beside Finish Plaza (Travertine steps, canopy arch, faceted pedestals, laurel halos & flags)
-    const podSt = getStationAtS(this.trackData, L + 13);
     const podiumGroup = new THREE.Group();
 
     const stoneMat = new THREE.MeshStandardMaterial({ color: 0xc2b9a7, roughness: 0.78, metalness: 0.06 });
@@ -4390,18 +4608,83 @@ class MarbleRushApp {
       this.flagMeshes.push(flagCloth);
     }
 
-    const podPos = podSt.pos
-      .clone()
-      .addScaledVector(podSt.R, halfW + 5.2)
-      .addScaledVector(podSt.U, -0.35);
-    podiumGroup.position.copy(podPos);
+    // Retaining plinth beneath Victory Pavilion so it never floats or clips terrain
+    const podPlinth = new THREE.Mesh(new THREE.BoxGeometry(9.8, 3.2, 5.6), graniteMat);
+    podPlinth.position.set(0, -1.6, 0.15);
+    podPlinth.receiveShadow = true;
+    podiumGroup.add(podPlinth);
+
+    const anchors = this.getPlazaPadAnchors();
+    const podSt = anchors.podSt;
+    podiumGroup.position.copy(anchors.podPos);
     podiumGroup.quaternion.copy(podSt.quat);
     this.trackGroup.add(podiumGroup);
 
-    // Opposite Finish Plaza Architectural Grandstand Tiers & Timing Booth
+    // Helper: Stylized 3D Instanced Spectators sitting/cheering across bleacher tiers
+    const populateStandCrowd = (targetGroup, tiersCount, colsPerTier, tierRise, tierStepZ, halfSpanX) => {
+      const total = tiersCount * colsPerTier;
+      const torsoGeo = new THREE.CylinderGeometry(0.14, 0.18, 0.44, 8);
+      const headGeo = new THREE.SphereGeometry(0.135, 10, 8);
+      const torsoMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.78, metalness: 0.04 });
+      const headMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.72, metalness: 0.02 });
+      const torsoIM = new THREE.InstancedMesh(torsoGeo, torsoMat, total);
+      const headIM = new THREE.InstancedMesh(headGeo, headMat, total);
+      torsoIM.castShadow = true;
+      headIM.castShadow = true;
+
+      const outfitHex = [0x3b4d61, 0x8c4438, 0xb8aa96, 0x4d6b53, 0x5c5169, 0xa8783a, 0x353b42, 0x966246, 0x44667a];
+      const skinHex = [0xdcb593, 0xc89872, 0x9d6c4d, 0xe8c7ab, 0x724c36];
+      const colTmp = new THREE.Color();
+      const baseSpecs = [];
+      let idx = 0;
+
+      for (let t = 0; t < tiersCount; t++) {
+        for (let c = 0; c < colsPerTier; c++) {
+          const u = colsPerTier > 1 ? c / (colsPerTier - 1) - 0.5 : 0;
+          const jitterX = Math.sin((t * 17 + c * 31) * 1.37) * 0.09;
+          const sx = u * (halfSpanX * 2) + jitterX;
+          const sy = 0.76 + t * tierRise;
+          const sz = -t * tierStepZ + 0.04;
+          const scale = 0.92 + ((t * 7 + c * 3) % 5) * 0.04;
+          const phase = (t * 1.9 + c * 0.77) % (Math.PI * 2);
+
+          baseSpecs.push({ x: sx, y: sy, z: sz, scale, phase });
+
+          this._dummy.position.set(sx, sy, sz);
+          this._dummy.rotation.set(0, 0, 0);
+          this._dummy.scale.setScalar(scale);
+          this._dummy.updateMatrix();
+          torsoIM.setMatrixAt(idx, this._dummy.matrix);
+
+          this._dummy.position.set(sx, sy + 0.36 * scale, sz);
+          this._dummy.updateMatrix();
+          headIM.setMatrixAt(idx, this._dummy.matrix);
+
+          colTmp.setHex(outfitHex[(idx * 5 + t) % outfitHex.length]);
+          torsoIM.setColorAt(idx, colTmp);
+          colTmp.setHex(skinHex[(idx * 3 + c) % skinHex.length]);
+          headIM.setColorAt(idx, colTmp);
+          idx++;
+        }
+      }
+      torsoIM.instanceMatrix.needsUpdate = true;
+      headIM.instanceMatrix.needsUpdate = true;
+      if (torsoIM.instanceColor) torsoIM.instanceColor.needsUpdate = true;
+      if (headIM.instanceColor) headIM.instanceColor.needsUpdate = true;
+
+      targetGroup.add(torsoIM, headIM);
+      this.crowdSpectatorGroups.push({ torsoIM, headIM, specs: baseSpecs });
+    };
+
+    // Opposite Finish Plaza Architectural Grandstand Tiers, Crowd & Timing Booth
     const standGroup = new THREE.Group();
     const standBaseMat = new THREE.MeshStandardMaterial({ color: 0x52575e, roughness: 0.72, metalness: 0.14 });
     const benchMat = new THREE.MeshStandardMaterial({ color: 0x8c5938, roughness: 0.74, metalness: 0.05 });
+    const standPlinth = new THREE.Mesh(new THREE.BoxGeometry(9.2, 3.2, 4.9), graniteMat);
+    standPlinth.position.set(0, -1.6, -1.25);
+    standPlinth.receiveShadow = true;
+    standGroup.add(standPlinth);
+
     for (let t = 0; t < 3; t++) {
       const tier = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.45, 1.15), standBaseMat);
       tier.position.set(0, 0.225 + t * 0.45, -t * 1.05);
@@ -4421,15 +4704,39 @@ class MarbleRushApp {
     boothGlass.position.set(0, 2.35, -2.18);
     standGroup.add(boothGlass);
 
-    const standSt = getStationAtS(this.trackData, L + 9);
-    const standPos = standSt.pos
-      .clone()
-      .addScaledVector(standSt.R, -(halfW + 6.2))
-      .addScaledVector(standSt.U, -0.35);
-    standGroup.position.copy(standPos);
-    standGroup.quaternion.copy(standSt.quat);
+    populateStandCrowd(standGroup, 3, 15, 0.45, 1.05, 3.65);
+
+    standGroup.position.copy(anchors.standPos);
+    standGroup.quaternion.copy(anchors.standSt.quat);
     standGroup.rotateY(Math.PI * 0.35);
     this.trackGroup.add(standGroup);
+
+    // Mid-Course Spectator Viewing Stand with live cheering fans
+    if (anchors.hasMidStand && anchors.midStandPos && anchors.midStandSt) {
+      const midStandGroup = new THREE.Group();
+      const midPlinth = new THREE.Mesh(new THREE.BoxGeometry(8.4, 3.2, 3.6), graniteMat);
+      midPlinth.position.set(0, -1.6, -0.75);
+      midPlinth.receiveShadow = true;
+      midStandGroup.add(midPlinth);
+
+      for (let t = 0; t < 2; t++) {
+        const tier = new THREE.Mesh(new THREE.BoxGeometry(7.8, 0.45, 1.1), standBaseMat);
+        tier.position.set(0, 0.225 + t * 0.45, -t * 1.02);
+        tier.receiveShadow = true;
+        tier.castShadow = true;
+        midStandGroup.add(tier);
+
+        const bench = new THREE.Mesh(new THREE.BoxGeometry(7.4, 0.12, 0.62), benchMat);
+        bench.position.set(0, 0.48 + t * 0.45, -t * 1.02);
+        midStandGroup.add(bench);
+      }
+
+      populateStandCrowd(midStandGroup, 2, 13, 0.45, 1.02, 3.3);
+      midStandGroup.position.copy(anchors.midStandPos);
+      midStandGroup.quaternion.copy(anchors.midStandSt.quat);
+      midStandGroup.rotateY(Math.PI * 0.5);
+      this.trackGroup.add(midStandGroup);
+    }
 
     // Clean major architectural span portals every 80m so sightlines remain wide open
     const gantryMat = new THREE.MeshStandardMaterial({
@@ -5193,6 +5500,9 @@ class MarbleRushApp {
     const activeQualityCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
     const recStarted = this.recorder.start(activeQualityCfg);
     this.dom.hudRecBadge.classList.toggle('hidden', !recStarted);
+    this.gameplayEndHold = 0;
+    this.crowdExcitement = 0.15;
+    this.hideCanvasOverlay();
 
     this.raceState = 'COUNTDOWN';
     this.countdownRemaining = 3.2;
@@ -5312,6 +5622,183 @@ class MarbleRushApp {
     this.countdownMesh.visible = true;
     this.countdownAnimTime = 0;
     this.countdownMesh.scale.setScalar(1.18);
+  }
+
+  hideCanvasOverlay() {
+    if (this.hudOverlayMesh) {
+      this.hudOverlayMesh.visible = false;
+    }
+    this.lastReplayWinnerBannerId = -1;
+  }
+
+  showCanvasWinnerBanner(winnerBall) {
+    if (!winnerBall || !this.hudOverlayCtx || !this.hudOverlayMesh || !this.hudOverlayTex) return;
+    const ctx = this.hudOverlayCtx;
+    const w = this.hudOverlayCanvas.width;
+    const h = this.hudOverlayCanvas.height;
+    const k = w / 1920;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.save();
+    const boxW = 640 * k;
+    const boxH = 92 * k;
+    const bx = (w - boxW) * 0.5;
+    const by = 68 * k;
+
+    ctx.fillStyle = 'rgba(16, 19, 24, 0.88)';
+    ctx.strokeStyle = 'rgba(229, 184, 75, 0.95)';
+    ctx.lineWidth = 3 * k;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 10 * k);
+    else ctx.rect(bx, by, boxW, boxH);
+    ctx.fill();
+    ctx.stroke();
+
+    // Marble swatch circle
+    const dotR = 16 * k;
+    const dotX = bx + 36 * k;
+    const dotY = by + boxH * 0.5;
+    ctx.beginPath();
+    ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
+    ctx.fillStyle = winnerBall.color || '#e5b84b';
+    ctx.fill();
+    ctx.lineWidth = 2 * k;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.stroke();
+
+    // 1ST PLACE Gold Tag
+    ctx.font = `700 ${26 * k}px "JetBrains Mono", monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#e5b84b';
+    ctx.fillText('1ST PLACE', bx + 70 * k, dotY);
+
+    // Ball Name
+    ctx.font = `700 ${32 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+    ctx.fillStyle = '#f4f1e8';
+    ctx.fillText(winnerBall.name.toUpperCase(), bx + 245 * k, dotY);
+
+    // Finish Time
+    const fTime = winnerBall.finishTime !== null ? `${winnerBall.finishTime.toFixed(2)}s` : '';
+    ctx.font = `600 ${28 * k}px "JetBrains Mono", monospace`;
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#68d391';
+    ctx.fillText(fTime, bx + boxW - 28 * k, dotY);
+    ctx.restore();
+
+    this.hudOverlayTex.needsUpdate = true;
+    this.hudOverlayMesh.visible = true;
+  }
+
+  showCanvasEndLeaderboard(sorted) {
+    if (!sorted || sorted.length === 0 || !this.hudOverlayCtx || !this.hudOverlayMesh || !this.hudOverlayTex) {
+      return;
+    }
+    const ctx = this.hudOverlayCtx;
+    const w = this.hudOverlayCanvas.width;
+    const h = this.hudOverlayCanvas.height;
+    const k = w / 1920;
+    ctx.clearRect(0, 0, w, h);
+
+    const winner = sorted[0];
+    const maxRows = Math.min(sorted.length, 10);
+    const rowH = 52 * k;
+    const cardW = 780 * k;
+    const headerH = 132 * k;
+    const cardH = headerH + maxRows * rowH + 26 * k;
+    const cx = (w - cardW) * 0.5;
+    const cy = Math.max(54 * k, (h - cardH) * 0.5);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(15, 18, 23, 0.90)';
+    ctx.strokeStyle = 'rgba(229, 184, 75, 0.92)';
+    ctx.lineWidth = 3 * k;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(cx, cy, cardW, cardH, 14 * k);
+    else ctx.rect(cx, cy, cardW, cardH);
+    ctx.fill();
+    ctx.stroke();
+
+    // Title & 1st Place Callout Banner
+    ctx.font = `700 ${22 * k}px "JetBrains Mono", monospace`;
+    ctx.fillStyle = '#e5b84b';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('OFFICIAL FINAL STANDINGS', cx + 32 * k, cy + 34 * k);
+
+    if (winner) {
+      ctx.beginPath();
+      ctx.arc(cx + 46 * k, cy + 84 * k, 18 * k, 0, Math.PI * 2);
+      ctx.fillStyle = winner.color || '#e5b84b';
+      ctx.fill();
+      ctx.lineWidth = 2 * k;
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.stroke();
+
+      ctx.font = `700 ${34 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(`1ST PLACE: ${winner.name.toUpperCase()}`, cx + 80 * k, cy + 84 * k);
+
+      const wTime = winner.finishTime !== null ? `${winner.finishTime.toFixed(2)}s` : `${winner.progressMeters.toFixed(1)}m`;
+      ctx.font = `700 ${30 * k}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#68d391';
+      ctx.fillText(wTime, cx + cardW - 32 * k, cy + 84 * k);
+    }
+
+    // Divider line
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = 1.5 * k;
+    ctx.beginPath();
+    ctx.moveTo(cx + 28 * k, cy + headerH - 6 * k);
+    ctx.lineTo(cx + cardW - 28 * k, cy + headerH - 6 * k);
+    ctx.stroke();
+
+    const winnerTime = winner?.finishTime ?? null;
+    for (let i = 0; i < maxRows; i++) {
+      const b = sorted[i];
+      const ry = cy + headerH + i * rowH + rowH * 0.5;
+      if (i % 2 === 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
+        ctx.fillRect(cx + 22 * k, ry - rowH * 0.45, cardW - 44 * k, rowH * 0.9);
+      }
+
+      // Rank badge
+      ctx.textAlign = 'left';
+      ctx.font = `700 ${24 * k}px "JetBrains Mono", monospace`;
+      ctx.fillStyle = i === 0 ? '#eab308' : i === 1 ? '#cbd5e1' : i === 2 ? '#d97706' : '#9aa1ac';
+      ctx.fillText(i === 0 ? '1ST' : `#${i + 1}`, cx + 34 * k, ry);
+
+      // Ball dot
+      ctx.beginPath();
+      ctx.arc(cx + 122 * k, ry, 11 * k, 0, Math.PI * 2);
+      ctx.fillStyle = b.color || '#ffffff';
+      ctx.fill();
+      ctx.lineWidth = 1.5 * k;
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.stroke();
+
+      // Ball Name
+      ctx.font = `600 ${25 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+      ctx.fillStyle = '#f1f0ec';
+      ctx.fillText(b.name, cx + 150 * k, ry);
+
+      // Metric (time + gap)
+      ctx.textAlign = 'right';
+      ctx.font = `600 ${23 * k}px "JetBrains Mono", monospace`;
+      if (b.finished && b.finishTime !== null) {
+        ctx.fillStyle = i === 0 ? '#68d391' : '#d2d6de';
+        const gapTxt = i === 0 ? 'WINNER' : winnerTime !== null ? `+${(b.finishTime - winnerTime).toFixed(2)}s` : '';
+        ctx.fillText(`${b.finishTime.toFixed(2)}s   ${gapTxt}`, cx + cardW - 34 * k, ry);
+      } else {
+        ctx.fillStyle = '#8b929e';
+        ctx.fillText(`${b.progressMeters.toFixed(1)}m`, cx + cardW - 34 * k, ry);
+      }
+    }
+
+    ctx.restore();
+    this.hudOverlayTex.needsUpdate = true;
+    this.hudOverlayMesh.visible = true;
   }
 
   stepSimulation(dt) {
@@ -5468,6 +5955,9 @@ class MarbleRushApp {
       if (relSpeed > 1.1) {
         const s = Math.min(1, relSpeed / 14);
         this.sound.playMarbleClack(s);
+        if (relSpeed > 4.8) {
+          this.crowdExcitement = Math.min(1, this.crowdExcitement + 0.14);
+        }
         if (this.raceState === 'RACING') {
           this.replay.recordAudioCue(this.raceElapsedTime, 'clack', s);
           if (relSpeed > 5.0) {
@@ -5813,6 +6303,11 @@ class MarbleRushApp {
           if (podSlot.haloRing) podSlot.haloRing.visible = true;
         }
 
+        if (ball.finishRank <= 3) {
+          this.crowdExcitement = 1.0;
+          this.sound.playCrowdCheerSpike(ball.finishRank === 1 ? 1.0 : 0.72);
+        }
+
         if (ball.finishRank === 1 && !this.winnerAnnounced) {
           this.winnerAnnounced = true;
           this.sound.playWin();
@@ -5828,6 +6323,7 @@ class MarbleRushApp {
             worldPos: ball.worldPos,
           });
           this.showWinnerToast(ball);
+          this.showCanvasWinnerBanner(ball);
           this.dom.btnViewResults.classList.remove('hidden');
           if (this.dom.btnCinematicReplay) {
             this.dom.btnCinematicReplay.classList.remove('hidden');
@@ -5846,6 +6342,42 @@ class MarbleRushApp {
       sorted[r].rank = r + 1;
     }
 
+    // Dynamic crowd excitement driven by ball density at hurdles/finish & tight packs
+    if (sorted.length > 0) {
+      let left = 0;
+      let maxCluster = 1;
+      let maxZoneCluster = 1;
+      for (let right = 0; right < sorted.length; right++) {
+        if (sorted[right].finished) continue;
+        while (
+          left < right &&
+          (sorted[left].finished || sorted[left].progressMeters - sorted[right].progressMeters > 4.6)
+        ) {
+          left++;
+        }
+        const winSize = right - left + 1;
+        if (winSize > maxCluster) maxCluster = winSize;
+        const sMid = sorted[right].progressMeters;
+        let nearCritical = sMid >= finishS - 20;
+        if (!nearCritical) {
+          for (let hIdx = 0; hIdx < this.hurdleStationsS.length; hIdx++) {
+            if (Math.abs(this.hurdleStationsS[hIdx] - sMid) < 4.5) {
+              nearCritical = true;
+              break;
+            }
+          }
+        }
+        if (nearCritical && winSize > maxZoneCluster) {
+          maxZoneCluster = winSize;
+        }
+      }
+      const packRatio = THREE.MathUtils.clamp((maxCluster - 1) / Math.max(2, sorted.length * 0.55), 0, 1);
+      const zoneRatio = THREE.MathUtils.clamp((maxZoneCluster - 1) / Math.max(2, sorted.length * 0.42), 0, 1);
+      const leadSprint = sorted[0].progressMeters >= finishS - 18 && !sorted[0].finished ? 0.34 : 0;
+      const densityExc = THREE.MathUtils.clamp(packRatio * 0.5 + zoneRatio * 0.55 + leadSprint, 0, 1);
+      this.crowdExcitement = Math.max(this.crowdExcitement, densityExc);
+    }
+
     // Track real overtakes / lead changes for Cinematic Replay Highlights
     if (sorted.length > 0 && !sorted[0].finished) {
       const newLeader = sorted[0];
@@ -5856,6 +6388,8 @@ class MarbleRushApp {
       ) {
         const oldLeaderId = this.lastLeaderId;
         this.lastLeaderId = newLeader.id;
+        this.crowdExcitement = Math.min(1, this.crowdExcitement + 0.44);
+        this.sound.playCrowdCheerSpike(0.75);
         this.replay.recordEvent({
           time: this.raceElapsedTime,
           type: 'lead_change',
@@ -5875,22 +6409,31 @@ class MarbleRushApp {
 
     if (this.finishedCount >= this.balls.length && this.raceState === 'RACING') {
       this.raceState = 'FINISHED';
+      this.crowdExcitement = 1.0;
+      this.sound.playCrowdCheerSpike(1.0);
       this.replay.captureFrame(
         this.raceElapsedTime,
         this.balls,
         this.kinematicHurdles,
         this.startGate
       );
+      this.showCanvasEndLeaderboard(sorted);
       this.syncUiState();
-      this.finalizeRecordingAndOpenResults();
+      if (this.recorder.isRecording) {
+        this.gameplayEndHold = 2.25;
+      } else {
+        this.finalizeRecordingAndOpenResults();
+      }
     }
   }
 
   async finalizeRecordingAndOpenResults() {
+    this.gameplayEndHold = 0;
     if (this.recorder.isRecording) {
       this.dom.hudRecBadge.classList.add('hidden');
       this.recordedVideoInfo = await this.recorder.stop();
     }
+    this.hideCanvasOverlay();
     if (!this.resultsDismissed) {
       this.openResultsModal();
     }
@@ -5973,9 +6516,9 @@ class MarbleRushApp {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`;
   }
 
-  enterReplayMode(startAtTime = 0) {
+  enterReplayMode(startAtTime = 0, { autoRecord = false } = {}) {
     if (!this.replay.hasData()) return;
-    this.sound.ensureContext();
+    this.sound.ensureContext(true);
     this.sound.updateRollingBed(0, false);
 
     if (this.dom.replayVideoPlayer) {
@@ -5992,7 +6535,17 @@ class MarbleRushApp {
     this.replay.compileDirectorSheet(this.raceElapsedTime, this.balls);
     this.replay.isPlaying = true;
     this.replay.activeShotIdx = -1;
+    this.cinematicEndHold = 0;
+    this.lastReplayWinnerBannerId = -1;
+    this.hideCanvasOverlay();
     this.raceState = 'REPLAY';
+
+    if (autoRecord) {
+      this.replay.autoDirector = true;
+      this.startCinematicRecording();
+    } else if (startAtTime === 0 && !this.recordedCinematicInfo && this.replay.autoDirector && !this.recorder.isRecording) {
+      this.startCinematicRecording();
+    }
 
     // Give full uncluttered screen to the cinematic replay
     this.setConfigDrawerOpen(false);
@@ -6001,9 +6554,46 @@ class MarbleRushApp {
     this.syncUiState();
   }
 
+  startCinematicRecording() {
+    if (!this.replay.hasData() || this.recorder.isRecording) return false;
+    this.sound.ensureContext(true);
+    const activeQualityCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const ok = this.cinematicRecorder.start(activeQualityCfg);
+    this.isRecordingCinematic = ok;
+    this.cinematicEndHold = 0;
+    this.dom.hudRecBadge.classList.toggle('hidden', !ok);
+    this.syncUiState();
+    return ok;
+  }
+
+  async finishCinematicRecording() {
+    this.cinematicEndHold = 0;
+    const wasRec = this.isRecordingCinematic;
+    this.isRecordingCinematic = false;
+    if (this.cinematicRecorder.isRecording) {
+      this.dom.hudRecBadge.classList.add('hidden');
+      this.recordedCinematicInfo = await this.cinematicRecorder.stop();
+    }
+    this.hideCanvasOverlay();
+    if (wasRec && this.raceState === 'REPLAY') {
+      this.exitReplayMode(true);
+    } else {
+      this.syncUiState();
+    }
+  }
+
   exitReplayMode(openResults = false) {
     if (this.raceState !== 'REPLAY') return;
+    if (this.cinematicRecorder.isRecording) {
+      this.cinematicRecorder.discard();
+    }
+    this.isRecordingCinematic = false;
+    this.cinematicEndHold = 0;
+    this.dom.hudRecBadge.classList.add('hidden');
+    this.hideCanvasOverlay();
+
     this.sound.updateRollingBed(0, false);
+    this.sound.updateCrowdExcitement(0, false);
     this.raceState = this.winnerAnnounced || this.finishedCount > 0 ? 'FINISHED' : 'READY';
     this.cameraMode = this.preReplayCameraMode || 'overview';
     this.replay.isPlaying = false;
@@ -6050,11 +6640,21 @@ class MarbleRushApp {
 
   playReplayAudioCue(cue) {
     if (!this.sound.enabled) return;
-    if (cue.kind === 'clack') this.sound.playMarbleClack(cue.intensity);
-    else if (cue.kind === 'hurdle') this.sound.playHurdleHit(cue.subType || 'rotating_bar', cue.intensity);
-    else if (cue.kind === 'wall') this.sound.playWallHit(cue.intensity);
-    else if (cue.kind === 'whoosh') this.sound.playWhoosh(cue.intensity);
-    else if (cue.kind === 'win') this.sound.playWin();
+    if (cue.kind === 'clack') {
+      this.sound.playMarbleClack(cue.intensity);
+      this.crowdExcitement = Math.min(1, this.crowdExcitement + 0.14);
+    } else if (cue.kind === 'hurdle') {
+      this.sound.playHurdleHit(cue.subType || 'rotating_bar', cue.intensity);
+      this.crowdExcitement = Math.min(1, this.crowdExcitement + 0.22);
+    } else if (cue.kind === 'wall') {
+      this.sound.playWallHit(cue.intensity);
+    } else if (cue.kind === 'whoosh') {
+      this.sound.playWhoosh(cue.intensity);
+    } else if (cue.kind === 'win') {
+      this.sound.playWin();
+      this.crowdExcitement = 1.0;
+      this.sound.playCrowdCheerSpike(1.0);
+    }
   }
 
   stepReplaySimulation(dt) {
@@ -6080,7 +6680,8 @@ class MarbleRushApp {
     const slowFactor = inSlowMo ? 0.36 : 1.0;
     const prevT = t;
     let nextT = prevT + dt * this.replay.playbackSpeed * slowFactor;
-    if (nextT >= this.replay.totalDuration) {
+    const reachedEnd = nextT >= this.replay.totalDuration;
+    if (reachedEnd) {
       nextT = this.replay.totalDuration;
       this.replay.isPlaying = false;
       this.syncUiState();
@@ -6101,6 +6702,27 @@ class MarbleRushApp {
 
     this.applyReplayFrameAtTime(nextT);
     this.updateReplayHud(inSlowMo);
+
+    // Show 1st Place winner text banner once first finisher crosses line during replay
+    const winnerBall = this.balls.find((b) => b.finishRank === 1);
+    if (winnerBall && winnerBall.finishTime !== null && nextT >= winnerBall.finishTime - 0.04) {
+      if (!reachedEnd && this.lastReplayWinnerBannerId !== winnerBall.id) {
+        this.lastReplayWinnerBannerId = winnerBall.id;
+        this.showCanvasWinnerBanner(winnerBall);
+      }
+    } else if (this.lastReplayWinnerBannerId !== -1) {
+      this.hideCanvasOverlay();
+    }
+
+    if (reachedEnd) {
+      const sorted = [...this.balls].sort((a, b) => a.rank - b.rank);
+      this.crowdExcitement = 1.0;
+      this.sound.playCrowdCheerSpike(0.95);
+      this.showCanvasEndLeaderboard(sorted);
+      if (this.isRecordingCinematic && this.cinematicRecorder.isRecording) {
+        this.cinematicEndHold = 2.25;
+      }
+    }
   }
 
   applyReplayFrameAtTime(t) {
@@ -6231,6 +6853,19 @@ class MarbleRushApp {
     }
 
     this.sound.updateRollingBed(leaderSpeed, this.replay.isPlaying);
+    // Compute crowd pack density excitement during replay as well
+    if (this.replay.isPlaying && n > 0) {
+      let avgS = 0;
+      for (let i = 0; i < n; i++) avgS += this.balls[i].progressMeters;
+      avgS /= n;
+      let clusterCount = 0;
+      for (let i = 0; i < n; i++) {
+        if (Math.abs(this.balls[i].progressMeters - avgS) < 6.5) clusterCount++;
+      }
+      const finishApproach = this.balls.some((b) => b.progressMeters >= this.config.distanceMeters - 18) ? 0.35 : 0;
+      const densityExc = THREE.MathUtils.clamp((clusterCount / Math.max(2, n * 0.7)) * 0.65 + finishApproach, 0, 1);
+      this.crowdExcitement = Math.max(this.crowdExcitement, densityExc);
+    }
   }
 
   seekReplay(targetTime) {
@@ -6240,6 +6875,10 @@ class MarbleRushApp {
     this.replay.prevTimeForAudio = clamped;
     this.replay.activeShotIdx = -1;
     this.directorState.justCut = true;
+    this.lastReplayWinnerBannerId = -1;
+    if (clamped < this.replay.totalDuration - 0.05) {
+      this.hideCanvasOverlay();
+    }
     this.applyReplayFrameAtTime(clamped);
     this.updateReplayHud(false);
     this.updateTelemetryHud();
@@ -6459,7 +7098,10 @@ class MarbleRushApp {
     if (!this.trackData || this.balls.length === 0) return;
 
     const mapCfg = TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition;
-    const targetFog = this.cameraMode === 'topdown' ? 0.00024 : mapCfg.fogDensity;
+    const targetFog =
+      this.cameraMode === 'topdown' || this.cameraMode === 'drone_top'
+        ? 0.00026
+        : mapCfg.fogDensity;
     if (this.scene.fog) {
       this.scene.fog.density = THREE.MathUtils.damp(this.scene.fog.density, targetFog, 6, dt);
     }
@@ -6805,6 +7447,64 @@ class MarbleRushApp {
 
       this._v3.set(bounds.centerX, bounds.centerY, bounds.centerZ);
       this._v1.set(bounds.centerX, bounds.centerY + altitude, bounds.centerZ + altitude * 0.055);
+    } else if (this.cameraMode === 'drone_top') {
+      // Dynamic Overhead Drone Follow tracking ALL balls until the finish line
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      let sumX = 0;
+      let sumY = 0;
+      let sumZ = 0;
+      let maxY = -Infinity;
+      let avgS = 0;
+
+      for (let i = 0; i < this.balls.length; i++) {
+        const bp = this.balls[i].worldPos;
+        if (bp.x < minX) minX = bp.x;
+        if (bp.x > maxX) maxX = bp.x;
+        if (bp.z < minZ) minZ = bp.z;
+        if (bp.z > maxZ) maxZ = bp.z;
+        if (bp.y > maxY) maxY = bp.y;
+        sumX += bp.x;
+        sumY += bp.y;
+        sumZ += bp.z;
+        avgS += this.balls[i].progressMeters;
+      }
+
+      // Include finish arch / gantry once leader closes in on finish so finish crossing stays centered
+      if (leader.progressMeters >= L - 18) {
+        const finAnchor = getStationAtS(this.trackData, L).pos;
+        if (finAnchor.x < minX) minX = finAnchor.x;
+        if (finAnchor.x > maxX) maxX = finAnchor.x;
+        if (finAnchor.z < minZ) minZ = finAnchor.z;
+        if (finAnchor.z > maxZ) maxZ = finAnchor.z;
+        if (finAnchor.y > maxY) maxY = finAnchor.y;
+      }
+
+      const nB = Math.max(1, this.balls.length);
+      const cx = (minX + maxX) * 0.5 * 0.65 + (sumX / nB) * 0.35;
+      const cz = (minZ + maxZ) * 0.5 * 0.65 + (sumZ / nB) * 0.35;
+      const cy = sumY / nB;
+      avgS /= nB;
+
+      const spanX = Math.max(12, maxX - minX + this.config.trackWidth * 1.4);
+      const spanZ = Math.max(12, maxZ - minZ + this.config.trackWidth * 1.4);
+      const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
+      const tanHalfFov = Math.tan(halfFovRad);
+      const reqHeightZ = (spanZ * 0.5) / tanHalfFov;
+      const reqHeightX = (spanX * 0.5) / (tanHalfFov * Math.max(0.45, this.camera.aspect));
+      const altitude = Math.max(22, Math.max(reqHeightZ, reqHeightX) * 1.32 + 12);
+
+      const midSt = getStationAtS(this.trackData, THREE.MathUtils.clamp(avgS, 0, L));
+      this._v3.set(cx, cy, cz);
+      this._v1.set(
+        cx - midSt.T.x * altitude * 0.2,
+        Math.max(cy, maxY) + altitude,
+        cz - midSt.T.z * altitude * 0.2
+      );
+      targetFov = 50;
+      dampFactor = isSoftwareGl ? 18 : 5.4;
     } else if (this.cameraMode === 'finish') {
       const finishSt = getStationAtS(this.trackData, L + 11.5);
       const lineSt = getStationAtS(this.trackData, Math.max(0, L - 5.5));
@@ -6988,7 +7688,10 @@ class MarbleRushApp {
       this.physicsDebugMesh.visible = false;
     }
 
-    if (this.countdownMesh && this.countdownMesh.visible && this.hudScene && this.hudCamera) {
+    const hasHudOverlay =
+      (this.countdownMesh && this.countdownMesh.visible) ||
+      (this.hudOverlayMesh && this.hudOverlayMesh.visible);
+    if (hasHudOverlay && this.hudScene && this.hudCamera) {
       this.renderer.autoClear = false;
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
@@ -7000,6 +7703,9 @@ class MarbleRushApp {
     }
     if (this.recorder.isRecording) {
       this.recorder.captureFrame();
+    }
+    if (this.cinematicRecorder.isRecording) {
+      this.cinematicRecorder.captureFrame();
     }
   }
 
@@ -7013,7 +7719,8 @@ class MarbleRushApp {
         this.lastFrameTime = now;
 
         // Lightweight adaptive GPU protection so 8K/32K SSAA stays smooth without lag
-        if (!isSoftwareGl && !this.recorder.isRecording && this.adaptivePrScale > 0.48) {
+        const anyRec = this.recorder.isRecording || this.cinematicRecorder.isRecording;
+        if (!isSoftwareGl && !anyRec && this.adaptivePrScale > 0.48) {
           if (rawDtMs > 44) {
             this.slowFrameCount++;
             if (this.slowFrameCount >= 42) {
@@ -7028,6 +7735,57 @@ class MarbleRushApp {
 
         this.stepSimulation(dt);
         this.updateCamera(dt);
+
+        // Handle post-finish leaderboard hold for Full Gameplay Video & Cinematic Replay Video
+        if (this.gameplayEndHold > 0) {
+          this.gameplayEndHold -= dt;
+          if (this.gameplayEndHold <= 0) {
+            this.finalizeRecordingAndOpenResults();
+          }
+        }
+        if (this.cinematicEndHold > 0) {
+          this.cinematicEndHold -= dt;
+          if (this.cinematicEndHold <= 0) {
+            this.finishCinematicRecording();
+          }
+        }
+
+        // Dynamic Crowd Audio Layer & Animated Spectators in Stands
+        this.crowdExcitement = Math.max(0, this.crowdExcitement - dt * 0.38);
+        const crowdActive =
+          this.raceState === 'RACING' ||
+          (this.raceState === 'REPLAY' && (this.replay.isPlaying || this.cinematicEndHold > 0)) ||
+          (this.raceState === 'FINISHED' && this.crowdExcitement > 0.08);
+        this.sound.updateCrowdExcitement(this.crowdExcitement, crowdActive);
+
+        if (this.crowdSpectatorGroups.length > 0) {
+          const exc = this.crowdExcitement;
+          const jumpAmp = 0.015 + exc * 0.17;
+          const jumpRate = 0.0038 + exc * 0.0092;
+          const swayAmp = 0.04 + exc * 0.14;
+          for (let g = 0; g < this.crowdSpectatorGroups.length; g++) {
+            const cg = this.crowdSpectatorGroups[g];
+            const specs = cg.specs;
+            for (let i = 0; i < specs.length; i++) {
+              const sp = specs[i];
+              const wave = Math.abs(Math.sin(now * jumpRate + sp.phase)) * jumpAmp;
+              const swayZ = Math.sin(now * 0.004 + sp.phase * 1.3) * swayAmp;
+              this._dummy.position.set(sp.x, sp.y + wave, sp.z);
+              this._dummy.rotation.set(swayZ, 0, swayZ * 0.5);
+              this._dummy.scale.setScalar(sp.scale);
+              this._dummy.updateMatrix();
+              cg.torsoIM.setMatrixAt(i, this._dummy.matrix);
+
+              this._dummy.position.set(sp.x, sp.y + wave + 0.36 * sp.scale, sp.z);
+              this._dummy.rotation.set(0, swayZ * 0.8, 0);
+              this._dummy.updateMatrix();
+              cg.headIM.setMatrixAt(i, this._dummy.matrix);
+            }
+            cg.torsoIM.instanceMatrix.needsUpdate = true;
+            cg.headIM.instanceMatrix.needsUpdate = true;
+          }
+        }
+
         if (this.shared.boosterTex) {
           this.shared.boosterTex.offset.y -= dt * 2.4;
         }
@@ -7218,7 +7976,7 @@ class MarbleRushApp {
           : `Distance Reached: ${winner.progressMeters.toFixed(1)}m`;
     }
 
-    // Configure Export Game Video Panel
+    // Configure Video 1 · Full Gameplay Video Panel
     if (this.recordedVideoInfo && this.recordedVideoInfo.blob.size > 0) {
       const mb = (this.recordedVideoInfo.blob.size / (1024 * 1024)).toFixed(2);
       const resLabel = `${this.recordedVideoInfo.width || 1920}×${this.recordedVideoInfo.height || 1080} · ${this.recordedVideoInfo.fps || 60}fps`;
@@ -7229,14 +7987,35 @@ class MarbleRushApp {
       this.dom.replayVideoPlayer.src = this.recordedVideoInfo.url;
     } else if (!this.recorder.isSupported()) {
       this.dom.videoExportPanel.classList.remove('hidden');
-      this.dom.videoExportMeta.textContent = 'Video capture unavailable in this browser';
+      this.dom.videoExportMeta.textContent = 'Video capture unavailable in browser';
       this.dom.btnExportVideo.disabled = true;
       this.dom.btnPreviewVideo.disabled = true;
     } else {
       this.dom.videoExportPanel.classList.add('hidden');
     }
+
+    // Configure Video 2 · Cinematic Shots Recording Panel
+    if (this.dom.videoExportCinematicPanel) {
+      const hasCinData = this.replay.hasData() && this.cinematicRecorder.isSupported();
+      this.dom.videoExportCinematicPanel.classList.toggle('hidden', !hasCinData);
+      if (this.recordedCinematicInfo && this.recordedCinematicInfo.blob.size > 0) {
+        const mb2 = (this.recordedCinematicInfo.blob.size / (1024 * 1024)).toFixed(2);
+        const resLabel2 = `${this.recordedCinematicInfo.width || 1920}×${this.recordedCinematicInfo.height || 1080} · ${this.recordedCinematicInfo.fps || 60}fps`;
+        this.dom.videoCinematicMeta.textContent = `${resLabel2} · ${mb2} MB · ${this.recordedCinematicInfo.ext.toUpperCase()} · Auto Cuts + Leaderboard`;
+        this.dom.btnPreviewCinematic.classList.remove('hidden');
+        this.dom.btnExportCinematic.classList.remove('hidden');
+        this.dom.btnRecordCinematic.textContent = 'Re-record Video 2';
+      } else {
+        this.dom.videoCinematicMeta.textContent = 'Auto-cut highlights + 1st place & final leaderboard';
+        this.dom.btnPreviewCinematic.classList.add('hidden');
+        this.dom.btnExportCinematic.classList.add('hidden');
+        this.dom.btnRecordCinematic.textContent = 'Record Cinematic';
+      }
+    }
+
     this.dom.videoPreviewWrap.classList.add('hidden');
-    this.dom.btnPreviewVideo.textContent = 'Preview Replay';
+    this.dom.btnPreviewVideo.textContent = 'Preview Video 1';
+    if (this.dom.btnPreviewCinematic) this.dom.btnPreviewCinematic.textContent = 'Preview Video 2';
 
     const winnerTime = winner?.finishTime ?? null;
     const tbody = this.dom.resultsTableBody;
@@ -7275,12 +8054,14 @@ class MarbleRushApp {
     this.dom.resultsModal.classList.remove('hidden');
   }
 
-  exportGameVideo() {
-    if (!this.recordedVideoInfo || !this.recordedVideoInfo.url) return;
+  exportGameVideo(which = 'gameplay') {
+    const info = which === 'cinematic' ? this.recordedCinematicInfo : this.recordedVideoInfo;
+    if (!info || !info.url) return;
     const a = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    a.href = this.recordedVideoInfo.url;
-    a.download = `marble-rush-3d-${stamp}.${this.recordedVideoInfo.ext}`;
+    const suffix = which === 'cinematic' ? 'cinematic-shots' : 'gameplay';
+    a.href = info.url;
+    a.download = `marble-rush-${suffix}-${stamp}.${info.ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -7308,6 +8089,11 @@ class MarbleRushApp {
     }
     if (this.dom.hudReplayBadge) {
       this.dom.hudReplayBadge.classList.toggle('hidden', !isReplay);
+    }
+    if (this.dom.btnReplayRecord) {
+      const recOn = isReplay && this.isRecordingCinematic && this.cinematicRecorder.isRecording;
+      this.dom.btnReplayRecord.classList.toggle('recording', recOn);
+      this.dom.btnReplayRecord.textContent = recOn ? 'REC Video 2...' : this.recordedCinematicInfo ? 'Re-record Video 2' : 'Record Video 2';
     }
 
     // Camera mode select, Follow-Up Angle select, Director shot tag & Free Cam
@@ -7843,17 +8629,46 @@ class MarbleRushApp {
     this.dom.btnHideHud.addEventListener('click', toggleZenHud);
     this.dom.btnShowHud.addEventListener('click', toggleZenHud);
 
-    // Results modal actions & video export
-    this.dom.btnExportVideo.addEventListener('click', () => this.exportGameVideo());
-    this.dom.btnPreviewVideo.addEventListener('click', () => {
-      const hidden = this.dom.videoPreviewWrap.classList.toggle('hidden');
-      this.dom.btnPreviewVideo.textContent = hidden ? 'Preview Replay' : 'Hide Replay';
-      if (!hidden) {
-        this.dom.replayVideoPlayer.play().catch(() => {});
-      } else {
+    // Results modal actions & dual video export (Video 1 Gameplay + Video 2 Cinematic)
+    let activePreviewKind = null;
+    const toggleVideoPreview = (kind) => {
+      const info = kind === 'cinematic' ? this.recordedCinematicInfo : this.recordedVideoInfo;
+      if (!info || !info.url) return;
+      const isShowingSame =
+        !this.dom.videoPreviewWrap.classList.contains('hidden') && activePreviewKind === kind;
+      if (isShowingSame) {
+        this.dom.videoPreviewWrap.classList.add('hidden');
         this.dom.replayVideoPlayer.pause();
+        activePreviewKind = null;
+      } else {
+        activePreviewKind = kind;
+        this.dom.replayVideoPlayer.src = info.url;
+        this.dom.videoPreviewWrap.classList.remove('hidden');
+        this.dom.replayVideoPlayer.play().catch(() => {});
       }
-    });
+      this.dom.btnPreviewVideo.textContent =
+        activePreviewKind === 'gameplay' ? 'Hide Preview' : 'Preview Video 1';
+      if (this.dom.btnPreviewCinematic) {
+        this.dom.btnPreviewCinematic.textContent =
+          activePreviewKind === 'cinematic' ? 'Hide Preview' : 'Preview Video 2';
+      }
+    };
+
+    this.dom.btnExportVideo.addEventListener('click', () => this.exportGameVideo('gameplay'));
+    this.dom.btnPreviewVideo.addEventListener('click', () => toggleVideoPreview('gameplay'));
+
+    if (this.dom.btnRecordCinematic) {
+      this.dom.btnRecordCinematic.addEventListener('click', () => {
+        this.enterReplayMode(0, { autoRecord: true });
+      });
+    }
+    if (this.dom.btnPreviewCinematic) {
+      this.dom.btnPreviewCinematic.addEventListener('click', () => toggleVideoPreview('cinematic'));
+    }
+    if (this.dom.btnExportCinematic) {
+      this.dom.btnExportCinematic.addEventListener('click', () => this.exportGameVideo('cinematic'));
+    }
+
     this.dom.btnResultsRaceAgain.addEventListener('click', () => {
       this.dom.replayVideoPlayer.pause();
       this.dom.resultsModal.classList.add('hidden');
@@ -7877,6 +8692,12 @@ class MarbleRushApp {
     }
     if (this.dom.btnResultsCinematicReplay) {
       this.dom.btnResultsCinematicReplay.addEventListener('click', () => this.enterReplayMode(0));
+    }
+    if (this.dom.btnReplayRecord) {
+      this.dom.btnReplayRecord.addEventListener('click', () => {
+        if (this.raceState !== 'REPLAY') return;
+        this.enterReplayMode(0, { autoRecord: true });
+      });
     }
     if (this.dom.btnReplayExit) {
       this.dom.btnReplayExit.addEventListener('click', () => this.exitReplayMode(false));
@@ -8002,8 +8823,9 @@ class MarbleRushApp {
       else if (e.key === '2') this.setCameraMode('director');
       else if (e.key === '3') this.setCameraMode('leader');
       else if (e.key === '4') this.setCameraMode('topdown');
-      else if (e.key === '5') this.setCameraMode('finish');
-      else if (e.key === '6') this.setCameraMode('free');
+      else if (e.key === '5') this.setCameraMode('drone_top');
+      else if (e.key === '6') this.setCameraMode('finish');
+      else if (e.key === '7') this.setCameraMode('free');
       else if ((e.key === 'c' || e.key === 'C') && this.cameraMode === 'leader') {
         this.cycleFollowShot();
       } else if (e.code === 'Space' && this.cameraMode !== 'free') {
