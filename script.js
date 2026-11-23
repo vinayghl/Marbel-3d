@@ -1115,7 +1115,7 @@ class GameplayRecorder {
     );
   }
 
-  start(qualityCfg = QUALITY_PRESETS.master32k) {
+  start(qualityCfg = QUALITY_PRESETS.standard) {
     this.discard();
     if (!this.isSupported()) return false;
 
@@ -1468,15 +1468,15 @@ class ReplaySystem {
     // 2. Build seamless gapless director shot timeline covering [0, dur]
     const rawCuts = [];
     const angleForEvent = (ev, prevAngle) => {
-      let pool = ['apex_chase', 'impact_close', 'side_drone', 'helicopter_orbit'];
+      let pool = ['apex_chase', 'impact_close', 'side_drone', 'above_pack_drone', 'helicopter_orbit'];
       if (ev.type === 'pack_clash') {
-        pool = ['impact_close', 'reverse_pack', 'helicopter_orbit', 'side_drone'];
+        pool = ['impact_close', 'reverse_pack', 'above_pack_drone', 'side_drone'];
       } else if (ev.type === 'hurdle_hit') {
         pool = ['hurdle_hero', 'impact_close', 'apex_chase', 'side_drone'];
       } else if (ev.type === 'big_air') {
         pool = ['jump_profile', 'impact_close', 'side_drone'];
       } else if (ev.type === 'lead_change') {
-        pool = ['bumper_duel', 'side_drone', 'reverse_pack', 'apex_chase'];
+        pool = ['bumper_duel', 'side_drone', 'above_pack_drone', 'reverse_pack'];
       } else if (ev.type === 'booster') {
         pool = ['bumper_duel', 'apex_chase', 'jump_profile'];
       } else if (ev.type === 'wall_slam') {
@@ -1496,7 +1496,8 @@ class ReplaySystem {
       bumper_duel: 'Bumper Duel',
       reverse_pack: 'Reverse Pack Cam',
       helicopter_orbit: 'Helicopter Sweeper',
-      side_drone: 'Tracking Side Drone',
+      side_drone: 'Drone Side Follow',
+      above_pack_drone: 'Drone Top Overhead',
       apex_chase: 'Dynamic Action Chase',
       finish_hero: 'Finish Gantry Hero',
     };
@@ -1524,7 +1525,7 @@ class ReplaySystem {
       cursor = openingEnd;
     }
 
-    const fillerAngles = ['apex_chase', 'side_drone', 'helicopter_orbit', 'reverse_pack', 'bumper_duel'];
+    const fillerAngles = ['apex_chase', 'side_drone', 'above_pack_drone', 'helicopter_orbit', 'reverse_pack', 'bumper_duel'];
     let fillerIdx = 0;
 
     for (const ev of chosen) {
@@ -2446,7 +2447,20 @@ class MarbleRushApp {
     this.cinematicEndHold = 0;
     this.crowdExcitement = 0;
     this.lastReplayWinnerBannerId = -1;
-    this.qualityPreset = isSoftwareGl ? 'standard' : 'master32k';
+    this.replayAnnouncedBallIds = new Set();
+    this.activeFinishBanners = [];
+    this.endLeaderboardActive = false;
+    this.endLeaderboardSorted = [];
+    this.minimapCache = null;
+    this.lastOverlayDrawAt = 0;
+    this.qualityPreset = 'standard';
+    this.recordQualityPreset = 'standard';
+    this.recordedVideoQuality = 'standard';
+    this.recordedCinematicQuality = 'standard';
+    this.replayRecordTarget = 'cinematic';
+    this.isRecordingGameplayPass = false;
+    this.gameplayReplayEndHold = 0;
+    this._savedReplayState = null;
     this.adaptivePrScale = 1.0;
     this.slowFrameCount = 0;
     this._activeEnvMapKey = null;
@@ -2625,6 +2639,7 @@ class MarbleRushApp {
       inputReplaySlowmo: document.getElementById('input-replay-slowmo'),
       inputReplayAutocam: document.getElementById('input-replay-autocam'),
       btnReplayRecord: document.getElementById('btn-replay-record'),
+      selectReplayQuality: document.getElementById('select-replay-quality'),
       btnReplayExit: document.getElementById('btn-replay-exit'),
 
       countdownOverlay: document.getElementById('countdown-overlay'),
@@ -2639,8 +2654,10 @@ class MarbleRushApp {
       winnerBadgeColor: document.getElementById('winner-badge-color'),
       winnerTitle: document.getElementById('winner-title'),
       winnerTimeLine: document.getElementById('winner-time-line'),
+      selectExportQuality: document.getElementById('select-export-quality'),
       videoExportPanel: document.getElementById('video-export-panel'),
       videoExportMeta: document.getElementById('video-export-meta'),
+      btnRenderGameplay: document.getElementById('btn-render-gameplay'),
       btnPreviewVideo: document.getElementById('btn-preview-video'),
       btnExportVideo: document.getElementById('btn-export-video'),
       videoExportCinematicPanel: document.getElementById('video-export-cinematic-panel'),
@@ -2698,16 +2715,30 @@ class MarbleRushApp {
     }, 380);
   }
 
+  getEffectiveQualityPresetKey() {
+    if (
+      !isSoftwareGl &&
+      (this.isRecordingCinematic || this.isRecordingGameplayPass) &&
+      QUALITY_PRESETS[this.recordQualityPreset]
+    ) {
+      return this.recordQualityPreset;
+    }
+    return QUALITY_PRESETS[this.qualityPreset] ? this.qualityPreset : 'standard';
+  }
+
   getTargetPixelRatio() {
     if (isSoftwareGl) return 1;
     const w = Math.max(1, window.innerWidth || 1280);
     const h = Math.max(1, window.innerHeight || 720);
-    const qCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const activeKey = this.getEffectiveQualityPresetKey();
+    const qCfg = QUALITY_PRESETS[activeKey] || QUALITY_PRESETS.standard;
+    const isRecordingPass = this.isRecordingCinematic || this.isRecordingGameplayPass;
+    const prScale = isRecordingPass ? 1.0 : this.adaptivePrScale;
     const desiredPr = Math.max(
       window.devicePixelRatio || 1,
       qCfg.targetLongestEdge / Math.max(w, h)
     );
-    let pr = Math.min(desiredPr, qCfg.maxPr) * this.adaptivePrScale;
+    let pr = Math.min(desiredPr, qCfg.maxPr) * prScale;
     if (this.renderer) {
       const caps = this.renderer.capabilities;
       const gl = this.renderer.getContext();
@@ -2773,7 +2804,7 @@ class MarbleRushApp {
     this.hemiLight = new THREE.HemisphereLight(0xd4e8ff, 0x3b352c, 0.94);
     this.scene.add(this.hemiLight);
 
-    const qCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const qCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.standard;
     const maxTex = this.renderer.capabilities.maxTextureSize || 4096;
     const shadowRes = isSoftwareGl ? 1024 : Math.min(qCfg.shadowSize, maxTex);
 
@@ -2836,25 +2867,20 @@ class MarbleRushApp {
     this.countdownMesh.visible = false;
     this.hudScene.add(this.countdownMesh);
 
-    // Full-frame WebGL Broadcast Overlay (1st Place Callout + End Leaderboard rendered directly into recorded videos)
+    // Full-frame WebGL Broadcast Overlay (Minimap, Live Standings, Finisher Notifications, Final Leaderboard)
     this.hudOverlayCanvas = document.createElement('canvas');
-    this.hudOverlayCanvas.width = isSoftwareGl ? 960 : 1920;
-    this.hudOverlayCanvas.height = isSoftwareGl ? 540 : 1080;
     this.hudOverlayCtx = this.hudOverlayCanvas.getContext('2d');
-    this.hudOverlayTex = new THREE.CanvasTexture(this.hudOverlayCanvas);
-    this.hudOverlayTex.colorSpace = THREE.SRGBColorSpace;
-    this.hudOverlayTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
     const ovMat = new THREE.MeshBasicMaterial({
-      map: this.hudOverlayTex,
+      map: null,
       transparent: true,
       depthTest: false,
       depthWrite: false,
     });
-    this.hudOverlayMesh = new THREE.Mesh(new THREE.PlaneGeometry(2 * (16 / 9), 2), ovMat);
+    this.hudOverlayMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), ovMat);
     this.hudOverlayMesh.position.set(0, 0, -1.25);
-    this.hudOverlayMesh.scale.setScalar(Math.min(aspect / (16 / 9), 1));
     this.hudOverlayMesh.visible = false;
     this.hudScene.add(this.hudOverlayMesh);
+    this.syncHudOverlayLayout(true);
 
     // Canvas WebGL context safety
     this.canvas.addEventListener('webglcontextlost', (e) => {
@@ -3009,6 +3035,41 @@ class MarbleRushApp {
     return { ...mapCfg, _darkCfg: darkCfg };
   }
 
+  syncHudOverlayLayout(force = false) {
+    if (!this.hudOverlayCanvas || !this.hudOverlayMesh || !this.renderer) return;
+    const w = Math.max(1, window.innerWidth || 1280);
+    const h = Math.max(1, window.innerHeight || 720);
+    const aspect = w / h;
+    const pr = this.getTargetPixelRatio();
+    const targetH = isSoftwareGl
+      ? 540
+      : Math.max(1080, Math.min(2160, Math.round(h * pr)));
+    const minW = isSoftwareGl ? 480 : 960;
+    const maxW = isSoftwareGl ? 1280 : 3840;
+    const targetW = THREE.MathUtils.clamp(Math.round(targetH * aspect), minW, maxW);
+
+    this.hudOverlayMesh.scale.set(aspect, 1, 1);
+
+    if (
+      force ||
+      !this.hudOverlayTex ||
+      Math.abs(this.hudOverlayCanvas.width - targetW) > 18 ||
+      Math.abs(this.hudOverlayCanvas.height - targetH) > 18
+    ) {
+      this.hudOverlayCanvas.width = targetW;
+      this.hudOverlayCanvas.height = targetH;
+      if (this.hudOverlayTex) {
+        this.hudOverlayTex.dispose();
+      }
+      this.hudOverlayTex = new THREE.CanvasTexture(this.hudOverlayCanvas);
+      this.hudOverlayTex.colorSpace = THREE.SRGBColorSpace;
+      this.hudOverlayTex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      this.hudOverlayMesh.material.map = this.hudOverlayTex;
+      this.hudOverlayMesh.material.needsUpdate = true;
+      this.lastOverlayDrawAt = 0;
+    }
+  }
+
   onResize() {
     const w = Math.max(1, window.innerWidth || 1280);
     const h = Math.max(1, window.innerHeight || 720);
@@ -3023,9 +3084,7 @@ class MarbleRushApp {
       this.hudCamera.bottom = -1;
       this.hudCamera.updateProjectionMatrix();
     }
-    if (this.hudOverlayMesh) {
-      this.hudOverlayMesh.scale.setScalar(Math.min(aspect / (16 / 9), 1));
-    }
+    this.syncHudOverlayLayout(false);
     this.renderer.setPixelRatio(pr);
     this.renderer.setSize(w, h);
   }
@@ -3069,17 +3128,31 @@ class MarbleRushApp {
   }
 
   rebuildTrackAndRace({ preserveCamera = false } = {}) {
-    const wasRecording = this.recorder.isRecording || this.cinematicRecorder.isRecording;
+    const wasRecording =
+      this.recorder.isRecording ||
+      this.cinematicRecorder.isRecording ||
+      this.isRecordingGameplayPass ||
+      this.isRecordingCinematic;
     this.recorder.discard();
     this.cinematicRecorder.discard();
-    if (wasRecording) this.onResize();
     this.recordedVideoInfo = null;
     this.recordedCinematicInfo = null;
+    this.recordedVideoQuality = this.qualityPreset;
+    this.recordedCinematicQuality = this.recordQualityPreset;
     this.isRecordingCinematic = false;
+    this.isRecordingGameplayPass = false;
+    this.replayRecordTarget = 'cinematic';
     this.gameplayEndHold = 0;
+    this.gameplayReplayEndHold = 0;
     this.cinematicEndHold = 0;
+    this._savedReplayState = null;
+    if (wasRecording) this.applyEffectiveRenderQuality();
     this.crowdExcitement = 0;
     this.lastReplayWinnerBannerId = -1;
+    this.replayAnnouncedBallIds = new Set();
+    this.activeFinishBanners = [];
+    this.endLeaderboardActive = false;
+    this.endLeaderboardSorted = [];
     this.dom.hudRecBadge.classList.add('hidden');
     this.dom.videoPreviewWrap.classList.add('hidden');
     this.dom.replayVideoPlayer.removeAttribute('src');
@@ -3160,6 +3233,7 @@ class MarbleRushApp {
 
     // Generate track geometry + physics collider
     this.trackData = buildTrackStations(this.config, this.trackSeed);
+    this.buildMinimapCache();
     this.buildTrackMeshesAndPhysics(mapCfg);
     this.buildEnvironmentFloorAndSupports(mapCfg);
     this.buildDistanceMarkers();
@@ -3176,6 +3250,7 @@ class MarbleRushApp {
 
     this.updateLeaderboard(true);
     this.syncUiState();
+    this.renderBroadcastHudCanvas(true);
   }
 
   // ==========================================================================
@@ -5497,12 +5572,19 @@ class MarbleRushApp {
       this.rebuildTrackAndRace({ preserveCamera: true });
     }
     this.sound.ensureContext(true);
-    const activeQualityCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const liveQualityKey = QUALITY_PRESETS[this.qualityPreset] ? this.qualityPreset : 'standard';
+    const activeQualityCfg = QUALITY_PRESETS[liveQualityKey] || QUALITY_PRESETS.standard;
+    this.recordedVideoQuality = liveQualityKey;
     const recStarted = this.recorder.start(activeQualityCfg);
     this.dom.hudRecBadge.classList.toggle('hidden', !recStarted);
     this.gameplayEndHold = 0;
+    this.gameplayReplayEndHold = 0;
     this.crowdExcitement = 0.15;
+    this.activeFinishBanners = [];
+    this.endLeaderboardActive = false;
+    this.endLeaderboardSorted = [];
     this.hideCanvasOverlay();
+    this.renderBroadcastHudCanvas(true);
 
     this.raceState = 'COUNTDOWN';
     this.countdownRemaining = 3.2;
@@ -5624,181 +5706,531 @@ class MarbleRushApp {
     this.countdownMesh.scale.setScalar(1.18);
   }
 
-  hideCanvasOverlay() {
-    if (this.hudOverlayMesh) {
-      this.hudOverlayMesh.visible = false;
+  formatOrdinal(rank) {
+    const mod100 = rank % 100;
+    if (mod100 >= 11 && mod100 <= 13) return `${rank}TH`;
+    const mod10 = rank % 10;
+    if (mod10 === 1) return `${rank}ST`;
+    if (mod10 === 2) return `${rank}ND`;
+    if (mod10 === 3) return `${rank}RD`;
+    return `${rank}TH`;
+  }
+
+  buildMinimapCache() {
+    if (!this.trackData) {
+      this.minimapCache = null;
+      return;
     }
+    const L = this.config.distanceMeters;
+    const samples = 110;
+    const rawPts = [];
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+
+    for (let i = 0; i <= samples; i++) {
+      const s = (i / samples) * L;
+      const st = getStationAtS(this.trackData, s);
+      const px = st.pos.x;
+      const pz = st.pos.z;
+      rawPts.push({ x: px, z: pz });
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (pz < minZ) minZ = pz;
+      if (pz > maxZ) maxZ = pz;
+    }
+
+    const span = Math.max(maxX - minX, maxZ - minZ, 12);
+    const cx = (minX + maxX) * 0.5;
+    const cz = (minZ + maxZ) * 0.5;
+    const toNorm = (wx, wz) => ({
+      nx: THREE.MathUtils.clamp(0.5 + ((wx - cx) / span) * 0.72, 0.08, 0.92),
+      nz: THREE.MathUtils.clamp(0.5 + ((wz - cz) / span) * 0.72, 0.1, 0.9),
+    });
+
+    const points = rawPts.map((p) => toNorm(p.x, p.z));
+    this.minimapCache = {
+      cx,
+      cz,
+      span,
+      points,
+      startNorm: points[0] || { nx: 0.5, nz: 0.15 },
+      finishNorm: points[points.length - 1] || { nx: 0.5, nz: 0.85 },
+    };
+  }
+
+  projectToMinimap(wx, wz) {
+    if (!this.minimapCache) return { nx: 0.5, nz: 0.5 };
+    const { cx, cz, span } = this.minimapCache;
+    return {
+      nx: THREE.MathUtils.clamp(0.5 + ((wx - cx) / span) * 0.72, 0.06, 0.94),
+      nz: THREE.MathUtils.clamp(0.5 + ((wz - cz) / span) * 0.72, 0.06, 0.94),
+    };
+  }
+
+  hideCanvasOverlay() {
+    this.endLeaderboardActive = false;
+    this.endLeaderboardSorted = [];
     this.lastReplayWinnerBannerId = -1;
+    this.renderBroadcastHudCanvas(true);
+  }
+
+  pushFinishBanner(ball, winnerTime = null) {
+    if (!ball) return;
+    const rank = ball.finishRank || ball.rank || 1;
+    const gap =
+      rank > 1 && winnerTime !== null && ball.finishTime !== null
+        ? `+${Math.max(0, ball.finishTime - winnerTime).toFixed(2)}s`
+        : rank === 1
+          ? 'WINNER'
+          : '';
+    this.activeFinishBanners = this.activeFinishBanners.filter((b) => b.id !== ball.id);
+    this.activeFinishBanners.unshift({
+      id: ball.id,
+      rank,
+      name: ball.name,
+      color: ball.color,
+      finishTime: ball.finishTime,
+      gap,
+      remaining: rank === 1 ? 3.2 : 2.35,
+    });
+    if (this.activeFinishBanners.length > 2) {
+      this.activeFinishBanners.length = 2;
+    }
+    this.renderBroadcastHudCanvas(true);
   }
 
   showCanvasWinnerBanner(winnerBall) {
-    if (!winnerBall || !this.hudOverlayCtx || !this.hudOverlayMesh || !this.hudOverlayTex) return;
-    const ctx = this.hudOverlayCtx;
-    const w = this.hudOverlayCanvas.width;
-    const h = this.hudOverlayCanvas.height;
-    const k = w / 1920;
-    ctx.clearRect(0, 0, w, h);
-
-    ctx.save();
-    const boxW = 640 * k;
-    const boxH = 92 * k;
-    const bx = (w - boxW) * 0.5;
-    const by = 68 * k;
-
-    ctx.fillStyle = 'rgba(16, 19, 24, 0.88)';
-    ctx.strokeStyle = 'rgba(229, 184, 75, 0.95)';
-    ctx.lineWidth = 3 * k;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 10 * k);
-    else ctx.rect(bx, by, boxW, boxH);
-    ctx.fill();
-    ctx.stroke();
-
-    // Marble swatch circle
-    const dotR = 16 * k;
-    const dotX = bx + 36 * k;
-    const dotY = by + boxH * 0.5;
-    ctx.beginPath();
-    ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2);
-    ctx.fillStyle = winnerBall.color || '#e5b84b';
-    ctx.fill();
-    ctx.lineWidth = 2 * k;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.stroke();
-
-    // 1ST PLACE Gold Tag
-    ctx.font = `700 ${26 * k}px "JetBrains Mono", monospace`;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#e5b84b';
-    ctx.fillText('1ST PLACE', bx + 70 * k, dotY);
-
-    // Ball Name
-    ctx.font = `700 ${32 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
-    ctx.fillStyle = '#f4f1e8';
-    ctx.fillText(winnerBall.name.toUpperCase(), bx + 245 * k, dotY);
-
-    // Finish Time
-    const fTime = winnerBall.finishTime !== null ? `${winnerBall.finishTime.toFixed(2)}s` : '';
-    ctx.font = `600 ${28 * k}px "JetBrains Mono", monospace`;
-    ctx.textAlign = 'right';
-    ctx.fillStyle = '#68d391';
-    ctx.fillText(fTime, bx + boxW - 28 * k, dotY);
-    ctx.restore();
-
-    this.hudOverlayTex.needsUpdate = true;
-    this.hudOverlayMesh.visible = true;
+    this.pushFinishBanner(winnerBall, winnerBall?.finishTime ?? null);
   }
 
   showCanvasEndLeaderboard(sorted) {
-    if (!sorted || sorted.length === 0 || !this.hudOverlayCtx || !this.hudOverlayMesh || !this.hudOverlayTex) {
-      return;
-    }
+    if (!sorted || sorted.length === 0) return;
+    this.endLeaderboardActive = true;
+    this.endLeaderboardSorted = sorted;
+    this.renderBroadcastHudCanvas(true);
+  }
+
+  renderBroadcastHudCanvas(force = false) {
+    if (!this.hudOverlayCtx || !this.hudOverlayMesh || !this.hudOverlayTex) return;
+    const now = performance.now();
+    if (!force && now - this.lastOverlayDrawAt < 34) return;
+    this.lastOverlayDrawAt = now;
+
     const ctx = this.hudOverlayCtx;
     const w = this.hudOverlayCanvas.width;
     const h = this.hudOverlayCanvas.height;
-    const k = w / 1920;
+    const k = h / 1080;
     ctx.clearRect(0, 0, w, h);
 
-    const winner = sorted[0];
-    const maxRows = Math.min(sorted.length, 10);
-    const rowH = 52 * k;
-    const cardW = 780 * k;
-    const headerH = 132 * k;
-    const cardH = headerH + maxRows * rowH + 26 * k;
-    const cx = (w - cardW) * 0.5;
-    const cy = Math.max(54 * k, (h - cardH) * 0.5);
+    // 1. Official Final Results Leaderboard Card (shown at end of BOTH Video 1 and Video 2)
+    if (this.endLeaderboardActive && this.endLeaderboardSorted.length > 0) {
+      const sorted = this.endLeaderboardSorted;
+      const winner = sorted[0];
+      const maxRows = Math.min(sorted.length, 10);
+      const rowH = 52 * k;
+      const cardW = Math.min(w - 48 * k, 780 * k);
+      const headerH = 132 * k;
+      const cardH = headerH + maxRows * rowH + 26 * k;
+      const cx = (w - cardW) * 0.5;
+      const cy = Math.max(54 * k, (h - cardH) * 0.5);
 
-    ctx.save();
-    ctx.fillStyle = 'rgba(15, 18, 23, 0.90)';
-    ctx.strokeStyle = 'rgba(229, 184, 75, 0.92)';
-    ctx.lineWidth = 3 * k;
-    ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(cx, cy, cardW, cardH, 14 * k);
-    else ctx.rect(cx, cy, cardW, cardH);
-    ctx.fill();
-    ctx.stroke();
-
-    // Title & 1st Place Callout Banner
-    ctx.font = `700 ${22 * k}px "JetBrains Mono", monospace`;
-    ctx.fillStyle = '#e5b84b';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('OFFICIAL FINAL STANDINGS', cx + 32 * k, cy + 34 * k);
-
-    if (winner) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(15, 18, 23, 0.92)';
+      ctx.strokeStyle = 'rgba(229, 184, 75, 0.92)';
+      ctx.lineWidth = 3 * k;
       ctx.beginPath();
-      ctx.arc(cx + 46 * k, cy + 84 * k, 18 * k, 0, Math.PI * 2);
-      ctx.fillStyle = winner.color || '#e5b84b';
+      if (ctx.roundRect) ctx.roundRect(cx, cy, cardW, cardH, 14 * k);
+      else ctx.rect(cx, cy, cardW, cardH);
       ctx.fill();
-      ctx.lineWidth = 2 * k;
-      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
       ctx.stroke();
 
-      ctx.font = `700 ${34 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(`1ST PLACE: ${winner.name.toUpperCase()}`, cx + 80 * k, cy + 84 * k);
-
-      const wTime = winner.finishTime !== null ? `${winner.finishTime.toFixed(2)}s` : `${winner.progressMeters.toFixed(1)}m`;
-      ctx.font = `700 ${30 * k}px "JetBrains Mono", monospace`;
-      ctx.textAlign = 'right';
-      ctx.fillStyle = '#68d391';
-      ctx.fillText(wTime, cx + cardW - 32 * k, cy + 84 * k);
-    }
-
-    // Divider line
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
-    ctx.lineWidth = 1.5 * k;
-    ctx.beginPath();
-    ctx.moveTo(cx + 28 * k, cy + headerH - 6 * k);
-    ctx.lineTo(cx + cardW - 28 * k, cy + headerH - 6 * k);
-    ctx.stroke();
-
-    const winnerTime = winner?.finishTime ?? null;
-    for (let i = 0; i < maxRows; i++) {
-      const b = sorted[i];
-      const ry = cy + headerH + i * rowH + rowH * 0.5;
-      if (i % 2 === 0) {
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
-        ctx.fillRect(cx + 22 * k, ry - rowH * 0.45, cardW - 44 * k, rowH * 0.9);
-      }
-
-      // Rank badge
+      ctx.font = `700 ${22 * k}px "JetBrains Mono", monospace`;
+      ctx.fillStyle = '#e5b84b';
       ctx.textAlign = 'left';
-      ctx.font = `700 ${24 * k}px "JetBrains Mono", monospace`;
-      ctx.fillStyle = i === 0 ? '#eab308' : i === 1 ? '#cbd5e1' : i === 2 ? '#d97706' : '#9aa1ac';
-      ctx.fillText(i === 0 ? '1ST' : `#${i + 1}`, cx + 34 * k, ry);
+      ctx.textBaseline = 'middle';
+      ctx.fillText('OFFICIAL FINAL STANDINGS', cx + 32 * k, cy + 34 * k);
 
-      // Ball dot
-      ctx.beginPath();
-      ctx.arc(cx + 122 * k, ry, 11 * k, 0, Math.PI * 2);
-      ctx.fillStyle = b.color || '#ffffff';
-      ctx.fill();
+      if (winner) {
+        ctx.beginPath();
+        ctx.arc(cx + 46 * k, cy + 84 * k, 18 * k, 0, Math.PI * 2);
+        ctx.fillStyle = winner.color || '#e5b84b';
+        ctx.fill();
+        ctx.lineWidth = 2 * k;
+        ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+        ctx.stroke();
+
+        ctx.font = `700 ${34 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`1ST PLACE: ${winner.name.toUpperCase()}`, cx + 80 * k, cy + 84 * k);
+
+        const wTime =
+          winner.finishTime !== null
+            ? `${winner.finishTime.toFixed(2)}s`
+            : `${winner.progressMeters.toFixed(1)}m`;
+        ctx.font = `700 ${30 * k}px "JetBrains Mono", monospace`;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#68d391';
+        ctx.fillText(wTime, cx + cardW - 32 * k, cy + 84 * k);
+      }
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
       ctx.lineWidth = 1.5 * k;
-      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(cx + 28 * k, cy + headerH - 6 * k);
+      ctx.lineTo(cx + cardW - 28 * k, cy + headerH - 6 * k);
       ctx.stroke();
 
-      // Ball Name
-      ctx.font = `600 ${25 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
-      ctx.fillStyle = '#f1f0ec';
-      ctx.fillText(b.name, cx + 150 * k, ry);
+      const winnerTime = winner?.finishTime ?? null;
+      for (let i = 0; i < maxRows; i++) {
+        const b = sorted[i];
+        const ry = cy + headerH + i * rowH + rowH * 0.5;
+        if (i % 2 === 0) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.035)';
+          ctx.fillRect(cx + 22 * k, ry - rowH * 0.45, cardW - 44 * k, rowH * 0.9);
+        }
 
-      // Metric (time + gap)
-      ctx.textAlign = 'right';
-      ctx.font = `600 ${23 * k}px "JetBrains Mono", monospace`;
-      if (b.finished && b.finishTime !== null) {
-        ctx.fillStyle = i === 0 ? '#68d391' : '#d2d6de';
-        const gapTxt = i === 0 ? 'WINNER' : winnerTime !== null ? `+${(b.finishTime - winnerTime).toFixed(2)}s` : '';
-        ctx.fillText(`${b.finishTime.toFixed(2)}s   ${gapTxt}`, cx + cardW - 34 * k, ry);
-      } else {
-        ctx.fillStyle = '#8b929e';
-        ctx.fillText(`${b.progressMeters.toFixed(1)}m`, cx + cardW - 34 * k, ry);
+        ctx.textAlign = 'left';
+        ctx.font = `700 ${24 * k}px "JetBrains Mono", monospace`;
+        ctx.fillStyle = i === 0 ? '#eab308' : i === 1 ? '#cbd5e1' : i === 2 ? '#d97706' : '#9aa1ac';
+        ctx.fillText(this.formatOrdinal(i + 1), cx + 34 * k, ry);
+
+        ctx.beginPath();
+        ctx.arc(cx + 122 * k, ry, 11 * k, 0, Math.PI * 2);
+        ctx.fillStyle = b.color || '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.5 * k;
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.stroke();
+
+        ctx.font = `600 ${25 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+        ctx.fillStyle = '#f1f0ec';
+        ctx.fillText(b.name, cx + 150 * k, ry);
+
+        ctx.textAlign = 'right';
+        ctx.font = `600 ${23 * k}px "JetBrains Mono", monospace`;
+        if (b.finished && b.finishTime !== null) {
+          ctx.fillStyle = i === 0 ? '#68d391' : '#d2d6de';
+          const gapTxt =
+            i === 0
+              ? 'WINNER'
+              : winnerTime !== null
+                ? `+${(b.finishTime - winnerTime).toFixed(2)}s`
+                : '';
+          ctx.fillText(`${b.finishTime.toFixed(2)}s   ${gapTxt}`, cx + cardW - 34 * k, ry);
+        } else {
+          ctx.fillStyle = '#8b929e';
+          ctx.fillText(`${b.progressMeters.toFixed(1)}m`, cx + cardW - 34 * k, ry);
+        }
       }
+
+      ctx.restore();
+      this.hudOverlayTex.needsUpdate = true;
+      this.hudOverlayMesh.visible = true;
+      return;
     }
 
-    ctx.restore();
-    this.hudOverlayTex.needsUpdate = true;
-    this.hudOverlayMesh.visible = true;
+    const activeRaceOrReplay =
+      this.raceState === 'COUNTDOWN' ||
+      this.raceState === 'RACING' ||
+      this.raceState === 'REPLAY' ||
+      this.raceState === 'FINISHED';
+
+    const sorted = [...this.balls].sort((a, b) => a.rank - b.rank);
+    let anyDrawn = false;
+
+    // 2. Compact Bottom-Left Minimap (Track Path, Start, Finish, Live Balls)
+    if (this.minimapCache && this.balls.length > 0) {
+      anyDrawn = true;
+      const mapW = 136 * k;
+      const mapH = 136 * k;
+      const mx = 14 * k;
+      const my = h - mapH - 14 * k;
+      const padTop = 22 * k;
+      const innerPad = 10 * k;
+      const plotW = mapW - innerPad * 2;
+      const plotH = mapH - padTop - innerPad;
+      const plotX = mx + innerPad;
+      const plotY = my + padTop;
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(13, 16, 22, 0.76)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+      ctx.lineWidth = 1.4 * k;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(mx, my, mapW, mapH, 7 * k);
+      else ctx.rect(mx, my, mapW, mapH);
+      ctx.fill();
+      ctx.stroke();
+
+      // Quiet Header + Progress %
+      const leader = sorted[0];
+      const leadPct = leader
+        ? Math.min(100, Math.max(0, Math.round((leader.progressMeters / Math.max(1, this.config.distanceMeters)) * 100)))
+        : 0;
+      ctx.font = `700 ${9.5 * k}px "JetBrains Mono", monospace`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8b93a2';
+      ctx.fillText('MAP', mx + 9 * k, my + 12 * k);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#e0a943';
+      ctx.fillText(`${leadPct}%`, mx + mapW - 9 * k, my + 12 * k);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1 * k;
+      ctx.beginPath();
+      ctx.moveTo(mx + 6 * k, my + padTop - 1 * k);
+      ctx.lineTo(mx + mapW - 6 * k, my + padTop - 1 * k);
+      ctx.stroke();
+
+      // Thin Track Ribbon
+      const pts = this.minimapCache.points;
+      if (pts.length >= 2) {
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) {
+          const px = plotX + pts[i].nx * plotW;
+          const py = plotY + pts[i].nz * plotH;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = 'rgba(130, 140, 156, 0.48)';
+        ctx.lineWidth = 5.2 * k;
+        ctx.stroke();
+
+        ctx.strokeStyle = '#1f242d';
+        ctx.lineWidth = 2.8 * k;
+        ctx.stroke();
+      }
+
+      // Start & Finish Markers
+      const sPt = this.minimapCache.startNorm;
+      const fPt = this.minimapCache.finishNorm;
+      const sx = plotX + sPt.nx * plotW;
+      const sy = plotY + sPt.nz * plotH;
+      const fx = plotX + fPt.nx * plotW;
+      const fy = plotY + fPt.nz * plotH;
+
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4.2 * k, 0, Math.PI * 2);
+      ctx.fillStyle = '#2ea86f';
+      ctx.fill();
+      ctx.lineWidth = 1.2 * k;
+      ctx.strokeStyle = '#ffffff';
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(fx, fy, 4.8 * k, 0, Math.PI * 2);
+      ctx.fillStyle = '#e0a943';
+      ctx.fill();
+      ctx.lineWidth = 1.2 * k;
+      ctx.strokeStyle = '#111419';
+      ctx.stroke();
+
+      // Compact S / F Labels kept cleanly inside bounds
+      ctx.font = `700 ${8 * k}px "JetBrains Mono", monospace`;
+      ctx.textBaseline = 'middle';
+      const sRight = sx > plotX + plotW * 0.62;
+      ctx.textAlign = sRight ? 'right' : 'left';
+      ctx.fillStyle = '#68d391';
+      ctx.fillText('START', sx + (sRight ? -7 * k : 7 * k), sy);
+
+      const fRight = fx > plotX + plotW * 0.62;
+      ctx.textAlign = fRight ? 'right' : 'left';
+      ctx.fillStyle = '#f2cc73';
+      ctx.fillText('FINISH', fx + (fRight ? -8 * k : 8 * k), fy);
+
+      // Every Ball Live Dot (leader crisp on top)
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const b = sorted[i];
+        const bp = this.projectToMinimap(b.worldPos.x, b.worldPos.z);
+        const bx = plotX + bp.nx * plotW;
+        const by = plotY + bp.nz * plotH;
+        const isFirst = i === 0;
+        const r = (isFirst ? 4.4 : 3.1) * k;
+
+        if (isFirst) {
+          ctx.beginPath();
+          ctx.arc(bx, by, r + 2 * k, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(224, 169, 67, 0.92)';
+          ctx.lineWidth = 1.4 * k;
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.fillStyle = b.color || '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1 * k;
+        ctx.strokeStyle = '#0f1217';
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // 3. Slim Top-Right Timing Tower Standings (Rendered on WebGL Canvas for Video 1 & Video 2)
+    if (activeRaceOrReplay && sorted.length > 0) {
+      anyDrawn = true;
+      const maxShown = 6;
+      const maxRows = Math.min(sorted.length, maxShown);
+      const rowH = 23 * k;
+      const cardW = 184 * k;
+      const headerH = 26 * k;
+      const extraFoot = sorted.length > maxShown ? 18 * k : 6 * k;
+      const cardH = headerH + maxRows * rowH + extraFoot;
+      const lx = w - cardW - 14 * k;
+      const ly = 58 * k;
+
+      ctx.save();
+      ctx.fillStyle = 'rgba(13, 16, 22, 0.78)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+      ctx.lineWidth = 1.4 * k;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(lx, ly, cardW, cardH, 7 * k);
+      else ctx.rect(lx, ly, cardW, cardH);
+      ctx.fill();
+      ctx.stroke();
+
+      // Header + Live Clock
+      const shownTime =
+        this.raceState === 'REPLAY' ? this.replay.currentTime : this.raceElapsedTime;
+      ctx.font = `700 ${9.5 * k}px "JetBrains Mono", monospace`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#8b93a2';
+      ctx.fillText('STANDINGS', lx + 9 * k, ly + 14 * k);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#e0a943';
+      ctx.fillText(this.formatTime(shownTime), lx + cardW - 9 * k, ly + 14 * k);
+
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.lineWidth = 1 * k;
+      ctx.beginPath();
+      ctx.moveTo(lx + 7 * k, ly + headerH - 1 * k);
+      ctx.lineTo(lx + cardW - 7 * k, ly + headerH - 1 * k);
+      ctx.stroke();
+
+      const replayT = this.replay.currentTime;
+      for (let i = 0; i < maxRows; i++) {
+        const b = sorted[i];
+        const ry = ly + headerH + i * rowH + rowH * 0.5;
+        if (i === 0) {
+          ctx.fillStyle = 'rgba(224, 169, 67, 0.1)';
+          ctx.fillRect(lx + 4 * k, ry - rowH * 0.44, cardW - 8 * k, rowH * 0.88);
+        }
+
+        ctx.textAlign = 'right';
+        ctx.font = `700 ${10 * k}px "JetBrains Mono", monospace`;
+        ctx.fillStyle = i === 0 ? '#eab308' : i === 1 ? '#cbd5e1' : i === 2 ? '#d97706' : '#7b8392';
+        ctx.fillText(`${i + 1}`, lx + 20 * k, ry);
+
+        // Sleek Formula Timing Bar instead of oversized circle
+        ctx.fillStyle = b.color || '#ffffff';
+        ctx.fillRect(lx + 26 * k, ry - 6 * k, 3 * k, 12 * k);
+
+        ctx.textAlign = 'left';
+        ctx.font = `600 ${11 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+        ctx.fillStyle = '#f1f0ec';
+        ctx.fillText(b.name, lx + 35 * k, ry);
+
+        const isFinishedShown =
+          this.raceState === 'REPLAY'
+            ? b.finishTime !== null && b.finishTime <= replayT + 0.04
+            : b.finished && b.finishTime !== null;
+
+        ctx.textAlign = 'right';
+        ctx.font = `600 ${10 * k}px "JetBrains Mono", monospace`;
+        if (isFinishedShown) {
+          ctx.fillStyle = '#68d391';
+          ctx.fillText(`${b.finishTime.toFixed(2)}s`, lx + cardW - 9 * k, ry);
+        } else {
+          ctx.fillStyle = '#9aa1ac';
+          ctx.fillText(`${Math.max(0, b.progressMeters).toFixed(1)}m`, lx + cardW - 9 * k, ry);
+        }
+      }
+
+      if (sorted.length > maxShown) {
+        ctx.font = `500 ${9 * k}px "JetBrains Mono", monospace`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#7b8392';
+        ctx.fillText(`+${sorted.length - maxShown} racing`, lx + cardW * 0.5, ly + cardH - 9 * k);
+      }
+      ctx.restore();
+    }
+
+    // 4. Slim Top-Center Finisher Notification Banner (tight to top edge, single-clean presentation)
+    if (this.activeFinishBanners.length > 0) {
+      anyDrawn = true;
+      const boxW = Math.min(w - 460 * k, 410 * k);
+      const boxH = 42 * k;
+      const gapY = 6 * k;
+      const bx = (w - boxW) * 0.5;
+
+      ctx.save();
+      for (let i = 0; i < this.activeFinishBanners.length; i++) {
+        const bn = this.activeFinishBanners[i];
+        const by = 58 * k + i * (boxH + gapY);
+        const borderCol =
+          bn.rank === 1
+            ? 'rgba(224, 169, 67, 0.94)'
+            : bn.rank === 2
+              ? 'rgba(203, 213, 225, 0.85)'
+              : bn.rank === 3
+                ? 'rgba(217, 119, 6, 0.85)'
+                : 'rgba(110, 168, 224, 0.78)';
+        const tagCol =
+          bn.rank === 1
+            ? '#e0a943'
+            : bn.rank === 2
+              ? '#e2e8f0'
+              : bn.rank === 3
+                ? '#f59e0b'
+                : '#7dd3fc';
+
+        ctx.fillStyle = 'rgba(13, 16, 22, 0.88)';
+        ctx.strokeStyle = borderCol;
+        ctx.lineWidth = 1.6 * k;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 7 * k);
+        else ctx.rect(bx, by, boxW, boxH);
+        ctx.fill();
+        ctx.stroke();
+
+        const cy = by + boxH * 0.5;
+        ctx.beginPath();
+        ctx.arc(bx + 20 * k, cy, 7.5 * k, 0, Math.PI * 2);
+        ctx.fillStyle = bn.color || '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.2 * k;
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.stroke();
+
+        ctx.font = `700 ${13 * k}px "JetBrains Mono", monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = tagCol;
+        ctx.fillText(this.formatOrdinal(bn.rank), bx + 36 * k, cy);
+
+        ctx.font = `700 ${15.5 * k}px "Outfit", "Plus Jakarta Sans", system-ui, sans-serif`;
+        ctx.fillStyle = '#f4f1e8';
+        ctx.fillText(bn.name.toUpperCase(), bx + 84 * k, cy);
+
+        const timeLabel = bn.finishTime !== null ? `${bn.finishTime.toFixed(2)}s` : '';
+        const rightTxt = bn.gap ? `${timeLabel} · ${bn.gap}` : timeLabel;
+        ctx.font = `600 ${13 * k}px "JetBrains Mono", monospace`;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#68d391';
+        ctx.fillText(rightTxt, bx + boxW - 14 * k, cy);
+      }
+      ctx.restore();
+    }
+
+    this.hudOverlayMesh.visible = anyDrawn;
+    if (anyDrawn) {
+      this.hudOverlayTex.needsUpdate = true;
+    }
   }
 
   stepSimulation(dt) {
@@ -6306,7 +6738,14 @@ class MarbleRushApp {
         if (ball.finishRank <= 3) {
           this.crowdExcitement = 1.0;
           this.sound.playCrowdCheerSpike(ball.finishRank === 1 ? 1.0 : 0.72);
+        } else {
+          this.sound.playCheckpointChime();
         }
+
+        const firstWinner = this.balls.find((b) => b.finishRank === 1);
+        const winnerTime = firstWinner?.finishTime ?? (ball.finishRank === 1 ? ball.finishTime : null);
+        this.showWinnerToast(ball, winnerTime);
+        this.pushFinishBanner(ball, winnerTime);
 
         if (ball.finishRank === 1 && !this.winnerAnnounced) {
           this.winnerAnnounced = true;
@@ -6322,8 +6761,6 @@ class MarbleRushApp {
             s: finishS,
             worldPos: ball.worldPos,
           });
-          this.showWinnerToast(ball);
-          this.showCanvasWinnerBanner(ball);
           this.dom.btnViewResults.classList.remove('hidden');
           if (this.dom.btnCinematicReplay) {
             this.dom.btnCinematicReplay.classList.remove('hidden');
@@ -6420,7 +6857,7 @@ class MarbleRushApp {
       this.showCanvasEndLeaderboard(sorted);
       this.syncUiState();
       if (this.recorder.isRecording) {
-        this.gameplayEndHold = 2.25;
+        this.gameplayEndHold = 2.8;
       } else {
         this.finalizeRecordingAndOpenResults();
       }
@@ -6516,7 +6953,17 @@ class MarbleRushApp {
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${tenths}`;
   }
 
-  enterReplayMode(startAtTime = 0, { autoRecord = false } = {}) {
+  restoreReplayRecordingOverrides() {
+    if (this._savedReplayState) {
+      this.replay.autoDirector = this._savedReplayState.autoDirector;
+      this.replay.autoSlowMo = this._savedReplayState.autoSlowMo;
+      this.replay.playbackSpeed = this._savedReplayState.playbackSpeed;
+      this._savedReplayState = null;
+    }
+    this.replayRecordTarget = 'cinematic';
+  }
+
+  enterReplayMode(startAtTime = 0, { autoRecord = false, recordMode = 'cinematic' } = {}) {
     if (!this.replay.hasData()) return;
     this.sound.ensureContext(true);
     this.sound.updateRollingBed(0, false);
@@ -6532,34 +6979,109 @@ class MarbleRushApp {
       this.preReplayCameraMode = this.cameraMode;
     }
 
+    this.restoreReplayRecordingOverrides();
     this.replay.compileDirectorSheet(this.raceElapsedTime, this.balls);
     this.replay.isPlaying = true;
     this.replay.activeShotIdx = -1;
     this.cinematicEndHold = 0;
+    this.gameplayReplayEndHold = 0;
     this.lastReplayWinnerBannerId = -1;
+    this.replayAnnouncedBallIds = new Set();
+    this.activeFinishBanners = [];
+    this.endLeaderboardActive = false;
+    this.endLeaderboardSorted = [];
     this.hideCanvasOverlay();
     this.raceState = 'REPLAY';
 
-    if (autoRecord) {
+    if (autoRecord && recordMode === 'gameplay') {
+      this.replayRecordTarget = 'gameplay';
+      this._savedReplayState = {
+        autoDirector: this.replay.autoDirector,
+        autoSlowMo: this.replay.autoSlowMo,
+        playbackSpeed: this.replay.playbackSpeed,
+      };
+      this.replay.autoDirector = false;
+      this.replay.autoSlowMo = false;
+      this.replay.playbackSpeed = 1.0;
+      if (this.preReplayCameraMode && this.preReplayCameraMode !== 'free') {
+        this.cameraMode = this.preReplayCameraMode;
+      } else {
+        this.cameraMode = 'director';
+      }
+      this.startGameplayReplayRecording();
+    } else if (autoRecord) {
+      this.replayRecordTarget = 'cinematic';
       this.replay.autoDirector = true;
       this.startCinematicRecording();
-    } else if (startAtTime === 0 && !this.recordedCinematicInfo && this.replay.autoDirector && !this.recorder.isRecording) {
+    } else if (
+      startAtTime === 0 &&
+      !this.recordedCinematicInfo &&
+      this.replay.autoDirector &&
+      !this.recorder.isRecording
+    ) {
+      this.replayRecordTarget = 'cinematic';
       this.startCinematicRecording();
     }
 
-    // Give full uncluttered screen to the cinematic replay
+    // Give full uncluttered screen to the replay / export pass
     this.setConfigDrawerOpen(false);
     this.renderReplayMarkers();
     this.seekReplay(startAtTime);
     this.syncUiState();
+    this.renderBroadcastHudCanvas(true);
+  }
+
+  startGameplayReplayRecording() {
+    if (!this.replay.hasData() || this.cinematicRecorder.isRecording) return false;
+    this.sound.ensureContext(true);
+    const recKey = QUALITY_PRESETS[this.recordQualityPreset] ? this.recordQualityPreset : 'standard';
+    const activeQualityCfg = QUALITY_PRESETS[recKey] || QUALITY_PRESETS.standard;
+    this.isRecordingGameplayPass = true;
+    this.applyEffectiveRenderQuality();
+    const ok = this.recorder.start(activeQualityCfg);
+    if (!ok) {
+      this.isRecordingGameplayPass = false;
+      this.applyEffectiveRenderQuality();
+    }
+    this.gameplayReplayEndHold = 0;
+    this.dom.hudRecBadge.classList.toggle('hidden', !ok);
+    this.syncUiState();
+    return ok;
+  }
+
+  async finishGameplayReplayRecording() {
+    this.gameplayReplayEndHold = 0;
+    const wasRec = this.isRecordingGameplayPass;
+    this.isRecordingGameplayPass = false;
+    if (this.recorder.isRecording) {
+      this.dom.hudRecBadge.classList.add('hidden');
+      this.recordedVideoInfo = await this.recorder.stop();
+      this.recordedVideoQuality = QUALITY_PRESETS[this.recordQualityPreset]
+        ? this.recordQualityPreset
+        : 'standard';
+    }
+    this.applyEffectiveRenderQuality();
+    this.hideCanvasOverlay();
+    this.restoreReplayRecordingOverrides();
+    if (wasRec && this.raceState === 'REPLAY') {
+      this.exitReplayMode(true);
+    } else {
+      this.syncUiState();
+    }
   }
 
   startCinematicRecording() {
     if (!this.replay.hasData() || this.recorder.isRecording) return false;
     this.sound.ensureContext(true);
-    const activeQualityCfg = QUALITY_PRESETS[this.qualityPreset] || QUALITY_PRESETS.master32k;
+    const recKey = QUALITY_PRESETS[this.recordQualityPreset] ? this.recordQualityPreset : 'standard';
+    const activeQualityCfg = QUALITY_PRESETS[recKey] || QUALITY_PRESETS.standard;
+    this.isRecordingCinematic = true;
+    this.applyEffectiveRenderQuality();
     const ok = this.cinematicRecorder.start(activeQualityCfg);
-    this.isRecordingCinematic = ok;
+    if (!ok) {
+      this.isRecordingCinematic = false;
+      this.applyEffectiveRenderQuality();
+    }
     this.cinematicEndHold = 0;
     this.dom.hudRecBadge.classList.toggle('hidden', !ok);
     this.syncUiState();
@@ -6573,7 +7095,11 @@ class MarbleRushApp {
     if (this.cinematicRecorder.isRecording) {
       this.dom.hudRecBadge.classList.add('hidden');
       this.recordedCinematicInfo = await this.cinematicRecorder.stop();
+      this.recordedCinematicQuality = QUALITY_PRESETS[this.recordQualityPreset]
+        ? this.recordQualityPreset
+        : 'standard';
     }
+    this.applyEffectiveRenderQuality();
     this.hideCanvasOverlay();
     if (wasRec && this.raceState === 'REPLAY') {
       this.exitReplayMode(true);
@@ -6587,8 +7113,15 @@ class MarbleRushApp {
     if (this.cinematicRecorder.isRecording) {
       this.cinematicRecorder.discard();
     }
+    if (this.isRecordingGameplayPass && this.recorder.isRecording) {
+      this.recorder.discard();
+    }
     this.isRecordingCinematic = false;
+    this.isRecordingGameplayPass = false;
     this.cinematicEndHold = 0;
+    this.gameplayReplayEndHold = 0;
+    this.restoreReplayRecordingOverrides();
+    this.applyEffectiveRenderQuality();
     this.dom.hudRecBadge.classList.add('hidden');
     this.hideCanvasOverlay();
 
@@ -6703,24 +7236,38 @@ class MarbleRushApp {
     this.applyReplayFrameAtTime(nextT);
     this.updateReplayHud(inSlowMo);
 
-    // Show 1st Place winner text banner once first finisher crosses line during replay
+    // Trigger per-ball finisher notification banner as each marble crosses the line during replay
     const winnerBall = this.balls.find((b) => b.finishRank === 1);
-    if (winnerBall && winnerBall.finishTime !== null && nextT >= winnerBall.finishTime - 0.04) {
-      if (!reachedEnd && this.lastReplayWinnerBannerId !== winnerBall.id) {
-        this.lastReplayWinnerBannerId = winnerBall.id;
-        this.showCanvasWinnerBanner(winnerBall);
+    const winnerTime = winnerBall?.finishTime ?? null;
+    const orderedFinishers = this.balls
+      .filter((b) => b.finishTime !== null && b.finishTime <= nextT + 0.04)
+      .sort((a, b) => (a.finishRank || 999) - (b.finishRank || 999));
+
+    for (const fb of orderedFinishers) {
+      if (!this.replayAnnouncedBallIds.has(fb.id)) {
+        this.replayAnnouncedBallIds.add(fb.id);
+        if (!reachedEnd) {
+          this.pushFinishBanner(fb, winnerTime);
+          if (fb.finishRank && fb.finishRank <= 3) {
+            this.crowdExcitement = 1.0;
+            this.sound.playCrowdCheerSpike(fb.finishRank === 1 ? 1.0 : 0.72);
+          } else {
+            this.sound.playCheckpointChime();
+          }
+        }
       }
-    } else if (this.lastReplayWinnerBannerId !== -1) {
-      this.hideCanvasOverlay();
     }
 
     if (reachedEnd) {
       const sorted = [...this.balls].sort((a, b) => a.rank - b.rank);
       this.crowdExcitement = 1.0;
       this.sound.playCrowdCheerSpike(0.95);
+      this.activeFinishBanners = [];
       this.showCanvasEndLeaderboard(sorted);
-      if (this.isRecordingCinematic && this.cinematicRecorder.isRecording) {
-        this.cinematicEndHold = 2.25;
+      if (this.isRecordingGameplayPass && this.recorder.isRecording) {
+        this.gameplayReplayEndHold = 2.8;
+      } else if (this.isRecordingCinematic && this.cinematicRecorder.isRecording) {
+        this.cinematicEndHold = 2.8;
       }
     }
   }
@@ -6876,6 +7423,13 @@ class MarbleRushApp {
     this.replay.activeShotIdx = -1;
     this.directorState.justCut = true;
     this.lastReplayWinnerBannerId = -1;
+    this.activeFinishBanners = [];
+    this.replayAnnouncedBallIds = new Set();
+    for (const b of this.balls) {
+      if (b.finishTime !== null && b.finishTime <= clamped + 0.04) {
+        this.replayAnnouncedBallIds.add(b.id);
+      }
+    }
     if (clamped < this.replay.totalDuration - 0.05) {
       this.hideCanvasOverlay();
     }
@@ -6883,6 +7437,7 @@ class MarbleRushApp {
     this.updateReplayHud(false);
     this.updateTelemetryHud();
     this.updateLeaderboard(false);
+    this.renderBroadcastHudCanvas(true);
   }
 
   jumpToReplayHighlight(dir) {
@@ -6933,19 +7488,26 @@ class MarbleRushApp {
 
     const shotIdx = this.replay.getShotIndexAt(cur);
     const shot = this.replay.shots[shotIdx];
-    const shotLabel = !this.replay.autoDirector
-      ? 'Manual Orbit'
-      : shot
-        ? shot.shotLabel
-        : 'Auto Director';
+    const shotLabel = this.isRecordingGameplayPass
+      ? 'Gameplay Camera'
+      : !this.replay.autoDirector
+        ? 'Manual Orbit'
+        : shot
+          ? shot.shotLabel
+          : 'Auto Director';
     if (this.dom.replayShotBadge) {
       this.dom.replayShotBadge.textContent = inSlowMo ? `0.36x · ${shotLabel}` : shotLabel;
     }
     if (this.dom.hudReplayMomentText) {
-      const momentText = shot ? shot.momentLabel : 'Highlight Reel';
-      this.dom.hudReplayMomentText.textContent = inSlowMo
-        ? `SLOW-MO · ${momentText}`
-        : `${shotLabel} · ${momentText}`;
+      const qLabel = QUALITY_PRESETS[this.recordQualityPreset]?.label || '1080p Standard';
+      if (this.isRecordingGameplayPass) {
+        this.dom.hudReplayMomentText.textContent = `Rendering Video 1 (${qLabel})`;
+      } else {
+        const momentText = shot ? shot.momentLabel : 'Highlight Reel';
+        this.dom.hudReplayMomentText.textContent = inSlowMo
+          ? `SLOW-MO · ${momentText}`
+          : `${shotLabel} · ${momentText}`;
+      }
     }
   }
 
@@ -7099,14 +7661,14 @@ class MarbleRushApp {
 
     const mapCfg = TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition;
     const targetFog =
-      this.cameraMode === 'topdown' || this.cameraMode === 'drone_top'
+      this.cameraMode === 'topdown' || this.cameraMode === 'drone_top' || this.cameraMode === 'drone_side'
         ? 0.00026
         : mapCfg.fogDensity;
     if (this.scene.fog) {
       this.scene.fog.density = THREE.MathUtils.damp(this.scene.fog.density, targetFog, 6, dt);
     }
 
-    if (this.raceState === 'REPLAY' && !this.replay.autoDirector) {
+    if (this.raceState === 'REPLAY' && !this.replay.autoDirector && !this.isRecordingGameplayPass) {
       this.controls.enabled = true;
       this.camera.up.set(0, 1, 0);
       this.updateFreeCameraMovement(dt);
@@ -7244,10 +7806,18 @@ class MarbleRushApp {
         this._v1
           .copy(st.pos)
           .addScaledVector(st.T, 1.4 - shotElapsed * 0.6)
-          .addScaledVector(st.U, 2.95)
-          .addScaledVector(st.R, rightSign * (halfW + 4.2));
+          .addScaledVector(st.U, 3.2)
+          .addScaledVector(st.R, rightSign * (halfW + 5.0));
         targetFov = 48;
         dampFactor = 9.0;
+      } else if (angleType === 'above_pack_drone') {
+        this._v3.copy(this._v2).addScaledVector(st.T, 2.5);
+        this._v1
+          .copy(this._v2)
+          .addScaledVector(st.T, -4.4)
+          .addScaledVector(st.U, 8.6);
+        targetFov = 51;
+        dampFactor = 8.0;
       } else if (angleType === 'finish_hero') {
         const finSt = getStationAtS(this.trackData, L + 9.2);
         this._v3.copy(leader.worldPos).lerp(finSt.pos, 0.28);
@@ -7447,8 +8017,8 @@ class MarbleRushApp {
 
       this._v3.set(bounds.centerX, bounds.centerY, bounds.centerZ);
       this._v1.set(bounds.centerX, bounds.centerY + altitude, bounds.centerZ + altitude * 0.055);
-    } else if (this.cameraMode === 'drone_top') {
-      // Dynamic Overhead Drone Follow tracking ALL balls until the finish line
+    } else if (this.cameraMode === 'drone_top' || this.cameraMode === 'drone_side') {
+      // Dynamic Drone Tracking ALL balls until the finish line (above-pack top OR lateral side drone)
       let minX = Infinity;
       let maxX = -Infinity;
       let minZ = Infinity;
@@ -7472,8 +8042,7 @@ class MarbleRushApp {
         avgS += this.balls[i].progressMeters;
       }
 
-      // Include finish arch / gantry once leader closes in on finish so finish crossing stays centered
-      if (leader.progressMeters >= L - 18) {
+      if (leader.progressMeters >= L - 16) {
         const finAnchor = getStationAtS(this.trackData, L).pos;
         if (finAnchor.x < minX) minX = finAnchor.x;
         if (finAnchor.x > maxX) maxX = finAnchor.x;
@@ -7483,28 +8052,38 @@ class MarbleRushApp {
       }
 
       const nB = Math.max(1, this.balls.length);
-      const cx = (minX + maxX) * 0.5 * 0.65 + (sumX / nB) * 0.35;
-      const cz = (minZ + maxZ) * 0.5 * 0.65 + (sumZ / nB) * 0.35;
+      const cx = (minX + maxX) * 0.5 * 0.58 + (sumX / nB) * 0.42;
+      const cz = (minZ + maxZ) * 0.5 * 0.58 + (sumZ / nB) * 0.42;
       const cy = sumY / nB;
       avgS /= nB;
 
-      const spanX = Math.max(12, maxX - minX + this.config.trackWidth * 1.4);
-      const spanZ = Math.max(12, maxZ - minZ + this.config.trackWidth * 1.4);
-      const halfFovRad = THREE.MathUtils.degToRad(this.camera.fov * 0.5);
-      const tanHalfFov = Math.tan(halfFovRad);
-      const reqHeightZ = (spanZ * 0.5) / tanHalfFov;
-      const reqHeightX = (spanX * 0.5) / (tanHalfFov * Math.max(0.45, this.camera.aspect));
-      const altitude = Math.max(22, Math.max(reqHeightZ, reqHeightX) * 1.32 + 12);
-
+      const spreadDiag = Math.hypot(Math.max(0, maxX - minX), Math.max(0, maxZ - minZ));
       const midSt = getStationAtS(this.trackData, THREE.MathUtils.clamp(avgS, 0, L));
-      this._v3.set(cx, cy, cz);
-      this._v1.set(
-        cx - midSt.T.x * altitude * 0.2,
-        Math.max(cy, maxY) + altitude,
-        cz - midSt.T.z * altitude * 0.2
-      );
-      targetFov = 50;
-      dampFactor = isSoftwareGl ? 18 : 5.4;
+
+      if (this.cameraMode === 'drone_top') {
+        // Above-head overhead drone follow: stays just above the balls' heads (not full-map bird's eye)
+        const altitude = THREE.MathUtils.clamp(6.8 + spreadDiag * 0.48, 7.2, 24.0);
+        this._v3.set(cx + midSt.T.x * 2.0, cy + 0.35, cz + midSt.T.z * 2.0);
+        this._v1.set(
+          cx - midSt.T.x * altitude * 0.38,
+          Math.max(cy, maxY) + altitude,
+          cz - midSt.T.z * altitude * 0.38
+        );
+        targetFov = 54;
+        dampFactor = isSoftwareGl ? 18 : 6.2;
+      } else {
+        // Lateral Side Drone Follow: skims beside the track framing all balls until finish line
+        const lateralDist = halfW + 6.8 + Math.min(11.0, spreadDiag * 0.36);
+        const sideHeight = 3.4 + Math.min(5.2, spreadDiag * 0.14);
+        this._v3.set(cx + midSt.T.x * 1.6, cy + 0.4, cz + midSt.T.z * 1.6);
+        this._v1
+          .set(cx, Math.max(cy, maxY), cz)
+          .addScaledVector(midSt.R, lateralDist)
+          .addScaledVector(midSt.U, sideHeight)
+          .addScaledVector(midSt.T, 1.8);
+        targetFov = 52;
+        dampFactor = isSoftwareGl ? 18 : 6.0;
+      }
     } else if (this.cameraMode === 'finish') {
       const finishSt = getStationAtS(this.trackData, L + 11.5);
       const lineSt = getStationAtS(this.trackData, Math.max(0, L - 5.5));
@@ -7743,6 +8322,12 @@ class MarbleRushApp {
             this.finalizeRecordingAndOpenResults();
           }
         }
+        if (this.gameplayReplayEndHold > 0) {
+          this.gameplayReplayEndHold -= dt;
+          if (this.gameplayReplayEndHold <= 0) {
+            this.finishGameplayReplayRecording();
+          }
+        }
         if (this.cinematicEndHold > 0) {
           this.cinematicEndHold -= dt;
           if (this.cinematicEndHold <= 0) {
@@ -7816,11 +8401,29 @@ class MarbleRushApp {
           }
         }
 
+        // Expire temporary per-ball finisher notification banners cleanly
+        if (this.activeFinishBanners.length > 0 && (this.raceState === 'RACING' || this.raceState === 'REPLAY' || this.raceState === 'FINISHED')) {
+          let bannerChanged = false;
+          for (let i = this.activeFinishBanners.length - 1; i >= 0; i--) {
+            this.activeFinishBanners[i].remaining -= dt;
+            if (this.activeFinishBanners[i].remaining <= 0) {
+              this.activeFinishBanners.splice(i, 1);
+              bannerChanged = true;
+            }
+          }
+          if (bannerChanged) {
+            this.renderBroadcastHudCanvas(true);
+          }
+        }
+
         if (now - this.lastHudUpdateAt > 75) {
           this.lastHudUpdateAt = now;
           this.updateTelemetryHud();
           this.updateLeaderboard(false);
         }
+
+        // Update on-canvas Minimap, Live Standings & Broadcast Overlay (~30 Hz for smooth zero-jitter capture)
+        this.renderBroadcastHudCanvas(false);
 
         this.renderActiveFrame();
       } catch (frameErr) {
@@ -7932,13 +8535,105 @@ class MarbleRushApp {
     }
   }
 
-  showWinnerToast(winnerBall) {
-    this.dom.winnerToastSwatch.style.backgroundColor = winnerBall.color;
-    this.dom.winnerToastText.textContent = `${winnerBall.name} Wins in ${winnerBall.finishTime.toFixed(2)}s!`;
+  showWinnerToast(ball, winnerTime = null) {
+    if (!ball) return;
+    const rank = ball.finishRank || 1;
+    const ord = this.formatOrdinal(rank);
+    const fTime = ball.finishTime !== null ? `${ball.finishTime.toFixed(2)}s` : '';
+    const gap =
+      rank > 1 && winnerTime !== null && ball.finishTime !== null
+        ? ` (+${Math.max(0, ball.finishTime - winnerTime).toFixed(2)}s)`
+        : '';
+    this.dom.winnerToastSwatch.style.backgroundColor = ball.color;
+    this.dom.winnerToastText.textContent =
+      rank === 1
+        ? `${ball.name} Wins 1st Place in ${fTime}!`
+        : `${ord} Place · ${ball.name} finished in ${fTime}${gap}`;
     this.dom.winnerToast.classList.remove('hidden');
-    setTimeout(() => {
+    clearTimeout(this._winnerToastTimer);
+    this._winnerToastTimer = setTimeout(() => {
       this.dom.winnerToast.classList.add('hidden');
-    }, 4500);
+    }, 3200);
+  }
+
+  getShortQualityTag(presetKey) {
+    const map = {
+      standard: '1080p',
+      uhd4k: '4K UHD',
+      uhd8k: '8K Cinema',
+      master32k: '32K Master',
+    };
+    return map[presetKey] || '1080p';
+  }
+
+  refreshResultsExportUi() {
+    const qKey = QUALITY_PRESETS[this.recordQualityPreset] ? this.recordQualityPreset : 'standard';
+    const qShort = this.getShortQualityTag(qKey);
+    if (this.dom.selectExportQuality) {
+      this.dom.selectExportQuality.value = qKey;
+      if (isSoftwareGl) this.dom.selectExportQuality.disabled = true;
+    }
+
+    // Configure Video 1 · Full Gameplay Video Panel
+    if (this.dom.videoExportPanel) {
+      const hasGameplayData = this.replay.hasData() && this.recorder.isSupported();
+      const hasGameplayVideo = Boolean(this.recordedVideoInfo && this.recordedVideoInfo.blob.size > 0);
+      this.dom.videoExportPanel.classList.toggle('hidden', !hasGameplayVideo && !hasGameplayData && this.recorder.isSupported());
+
+      if (!this.recorder.isSupported()) {
+        this.dom.videoExportPanel.classList.remove('hidden');
+        this.dom.videoExportMeta.textContent = 'Video capture unavailable in browser';
+        if (this.dom.btnRenderGameplay) this.dom.btnRenderGameplay.classList.add('hidden');
+        this.dom.btnExportVideo.disabled = true;
+        this.dom.btnPreviewVideo.disabled = true;
+      } else {
+        if (hasGameplayVideo) {
+          const mb = (this.recordedVideoInfo.blob.size / (1024 * 1024)).toFixed(2);
+          const v1Tag = this.getShortQualityTag(this.recordedVideoQuality);
+          const resLabel = `${this.recordedVideoInfo.width || 1920}×${this.recordedVideoInfo.height || 1080} · ${this.recordedVideoInfo.fps || 60}fps`;
+          this.dom.videoExportMeta.textContent = `${v1Tag} · ${resLabel} · ${mb} MB · ${this.recordedVideoInfo.ext.toUpperCase()}`;
+          this.dom.btnPreviewVideo.classList.remove('hidden');
+          this.dom.btnExportVideo.classList.remove('hidden');
+          this.dom.btnExportVideo.disabled = false;
+          this.dom.btnPreviewVideo.disabled = false;
+        } else {
+          this.dom.videoExportMeta.textContent = `Render gameplay camera in ${qShort} + leaderboard`;
+          this.dom.btnPreviewVideo.classList.add('hidden');
+          this.dom.btnExportVideo.classList.add('hidden');
+        }
+
+        if (this.dom.btnRenderGameplay) {
+          this.dom.btnRenderGameplay.classList.toggle('hidden', !hasGameplayData);
+          const sameQuality = hasGameplayVideo && this.recordedVideoQuality === qKey;
+          this.dom.btnRenderGameplay.textContent = sameQuality
+            ? `Re-render ${qShort}`
+            : `Render in ${qShort}`;
+        }
+      }
+    }
+
+    // Configure Video 2 · Cinematic Shots Recording Panel
+    if (this.dom.videoExportCinematicPanel) {
+      const hasCinData = this.replay.hasData() && this.cinematicRecorder.isSupported();
+      this.dom.videoExportCinematicPanel.classList.toggle('hidden', !hasCinData);
+      if (this.recordedCinematicInfo && this.recordedCinematicInfo.blob.size > 0) {
+        const mb2 = (this.recordedCinematicInfo.blob.size / (1024 * 1024)).toFixed(2);
+        const v2Tag = this.getShortQualityTag(this.recordedCinematicQuality);
+        const resLabel2 = `${this.recordedCinematicInfo.width || 1920}×${this.recordedCinematicInfo.height || 1080} · ${this.recordedCinematicInfo.fps || 60}fps`;
+        this.dom.videoCinematicMeta.textContent = `${v2Tag} · ${resLabel2} · ${mb2} MB · ${this.recordedCinematicInfo.ext.toUpperCase()}`;
+        this.dom.btnPreviewCinematic.classList.remove('hidden');
+        this.dom.btnExportCinematic.classList.remove('hidden');
+        const sameCinQuality = this.recordedCinematicQuality === qKey;
+        this.dom.btnRecordCinematic.textContent = sameCinQuality
+          ? `Re-record ${qShort}`
+          : `Record in ${qShort}`;
+      } else {
+        this.dom.videoCinematicMeta.textContent = `Auto-cut highlights in ${qShort} + leaderboard`;
+        this.dom.btnPreviewCinematic.classList.add('hidden');
+        this.dom.btnExportCinematic.classList.add('hidden');
+        this.dom.btnRecordCinematic.textContent = `Record in ${qShort}`;
+      }
+    }
   }
 
   async openResultsModal() {
@@ -7976,41 +8671,9 @@ class MarbleRushApp {
           : `Distance Reached: ${winner.progressMeters.toFixed(1)}m`;
     }
 
-    // Configure Video 1 · Full Gameplay Video Panel
-    if (this.recordedVideoInfo && this.recordedVideoInfo.blob.size > 0) {
-      const mb = (this.recordedVideoInfo.blob.size / (1024 * 1024)).toFixed(2);
-      const resLabel = `${this.recordedVideoInfo.width || 1920}×${this.recordedVideoInfo.height || 1080} · ${this.recordedVideoInfo.fps || 60}fps`;
-      this.dom.videoExportMeta.textContent = `${resLabel} · ${mb} MB · ${this.recordedVideoInfo.ext.toUpperCase()} · ${this.formatTime(this.raceElapsedTime)}`;
-      this.dom.videoExportPanel.classList.remove('hidden');
-      this.dom.btnExportVideo.disabled = false;
-      this.dom.btnPreviewVideo.disabled = false;
+    this.refreshResultsExportUi();
+    if (this.recordedVideoInfo && this.recordedVideoInfo.url) {
       this.dom.replayVideoPlayer.src = this.recordedVideoInfo.url;
-    } else if (!this.recorder.isSupported()) {
-      this.dom.videoExportPanel.classList.remove('hidden');
-      this.dom.videoExportMeta.textContent = 'Video capture unavailable in browser';
-      this.dom.btnExportVideo.disabled = true;
-      this.dom.btnPreviewVideo.disabled = true;
-    } else {
-      this.dom.videoExportPanel.classList.add('hidden');
-    }
-
-    // Configure Video 2 · Cinematic Shots Recording Panel
-    if (this.dom.videoExportCinematicPanel) {
-      const hasCinData = this.replay.hasData() && this.cinematicRecorder.isSupported();
-      this.dom.videoExportCinematicPanel.classList.toggle('hidden', !hasCinData);
-      if (this.recordedCinematicInfo && this.recordedCinematicInfo.blob.size > 0) {
-        const mb2 = (this.recordedCinematicInfo.blob.size / (1024 * 1024)).toFixed(2);
-        const resLabel2 = `${this.recordedCinematicInfo.width || 1920}×${this.recordedCinematicInfo.height || 1080} · ${this.recordedCinematicInfo.fps || 60}fps`;
-        this.dom.videoCinematicMeta.textContent = `${resLabel2} · ${mb2} MB · ${this.recordedCinematicInfo.ext.toUpperCase()} · Auto Cuts + Leaderboard`;
-        this.dom.btnPreviewCinematic.classList.remove('hidden');
-        this.dom.btnExportCinematic.classList.remove('hidden');
-        this.dom.btnRecordCinematic.textContent = 'Re-record Video 2';
-      } else {
-        this.dom.videoCinematicMeta.textContent = 'Auto-cut highlights + 1st place & final leaderboard';
-        this.dom.btnPreviewCinematic.classList.add('hidden');
-        this.dom.btnExportCinematic.classList.add('hidden');
-        this.dom.btnRecordCinematic.textContent = 'Record Cinematic';
-      }
     }
 
     this.dom.videoPreviewWrap.classList.add('hidden');
@@ -8057,11 +8720,12 @@ class MarbleRushApp {
   exportGameVideo(which = 'gameplay') {
     const info = which === 'cinematic' ? this.recordedCinematicInfo : this.recordedVideoInfo;
     if (!info || !info.url) return;
+    const qKey = which === 'cinematic' ? this.recordedCinematicQuality : this.recordedVideoQuality;
     const a = document.createElement('a');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const suffix = which === 'cinematic' ? 'cinematic-shots' : 'gameplay';
     a.href = info.url;
-    a.download = `marble-rush-${suffix}-${stamp}.${info.ext}`;
+    a.download = `marble-rush-${suffix}-${qKey || 'standard'}-${stamp}.${info.ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -8078,6 +8742,12 @@ class MarbleRushApp {
     this.dom.btnResume.classList.toggle('hidden', s !== 'PAUSED');
     this.dom.btnStart.textContent = s === 'FINISHED' ? 'Race Again' : 'Start Race';
 
+    if (this.dom.leaderboardPanel) {
+      const useCanvasBroadcast =
+        s === 'COUNTDOWN' || s === 'RACING' || s === 'REPLAY' || s === 'FINISHED';
+      this.dom.leaderboardPanel.classList.toggle('hidden-for-broadcast', useCanvasBroadcast);
+    }
+
     if (this.dom.btnCinematicReplay) {
       this.dom.btnCinematicReplay.classList.toggle('hidden', isReplay || !this.replay.hasData());
     }
@@ -8093,7 +8763,11 @@ class MarbleRushApp {
     if (this.dom.btnReplayRecord) {
       const recOn = isReplay && this.isRecordingCinematic && this.cinematicRecorder.isRecording;
       this.dom.btnReplayRecord.classList.toggle('recording', recOn);
-      this.dom.btnReplayRecord.textContent = recOn ? 'REC Video 2...' : this.recordedCinematicInfo ? 'Re-record Video 2' : 'Record Video 2';
+      this.dom.btnReplayRecord.textContent = recOn
+        ? 'REC Video 2...'
+        : this.recordedCinematicInfo
+          ? 'Re-record Video 2'
+          : 'Record Video 2';
     }
 
     // Camera mode select, Follow-Up Angle select, Director shot tag & Free Cam
@@ -8110,20 +8784,30 @@ class MarbleRushApp {
       this.dom.cameraShotLabel.textContent = this.directorState.shotName;
     }
     if (this.dom.freeCamBar) {
-      const showFreeBar = (!isReplay && this.cameraMode === 'free') || (isReplay && !this.replay.autoDirector);
+      const showFreeBar =
+        (!isReplay && this.cameraMode === 'free') ||
+        (isReplay && !this.replay.autoDirector && !this.isRecordingGameplayPass);
       this.dom.freeCamBar.classList.toggle('hidden', !showFreeBar);
     }
     if (this.dom.btnToggleMusic) {
-      this.dom.btnToggleMusic.textContent = this.sound.musicEnabled ? 'Music On' : 'Music Off';
+      this.dom.btnToggleMusic.textContent = this.sound.musicEnabled ? 'Music' : 'Music Off';
       this.dom.btnToggleMusic.classList.toggle('active', this.sound.musicEnabled);
     }
     if (this.dom.btnToggleSound) {
-      this.dom.btnToggleSound.textContent = this.sound.enabled ? 'Sound On' : 'Sound Off';
+      this.dom.btnToggleSound.textContent = this.sound.enabled ? 'Sound' : 'Sound Off';
       this.dom.btnToggleSound.classList.toggle('active', this.sound.enabled);
     }
     if (this.dom.selectQuality) {
       this.dom.selectQuality.value = this.qualityPreset;
       if (isSoftwareGl) this.dom.selectQuality.disabled = true;
+    }
+    if (this.dom.selectReplayQuality) {
+      this.dom.selectReplayQuality.value = this.recordQualityPreset;
+      if (isSoftwareGl) this.dom.selectReplayQuality.disabled = true;
+    }
+    if (this.dom.selectExportQuality) {
+      this.dom.selectExportQuality.value = this.recordQualityPreset;
+      if (isSoftwareGl) this.dom.selectExportQuality.disabled = true;
     }
 
     if (this.dom.selectReplaySpeed) {
@@ -8140,11 +8824,10 @@ class MarbleRushApp {
     }
   }
 
-  setQualityPreset(presetKey) {
+  applyEffectiveRenderQuality() {
     if (isSoftwareGl) return;
-    const key = QUALITY_PRESETS[presetKey] ? presetKey : 'master32k';
-    const qCfg = QUALITY_PRESETS[key];
-    this.qualityPreset = key;
+    const key = this.getEffectiveQualityPresetKey();
+    const qCfg = QUALITY_PRESETS[key] || QUALITY_PRESETS.standard;
     this.adaptivePrScale = 1.0;
     this.slowFrameCount = 0;
 
@@ -8165,7 +8848,20 @@ class MarbleRushApp {
     }
 
     this.onResize();
+  }
+
+  setQualityPreset(presetKey) {
+    if (isSoftwareGl) return;
+    this.qualityPreset = QUALITY_PRESETS[presetKey] ? presetKey : 'standard';
+    this.applyEffectiveRenderQuality();
     this.syncUiState();
+  }
+
+  setRecordQualityPreset(presetKey) {
+    if (isSoftwareGl) return;
+    this.recordQualityPreset = QUALITY_PRESETS[presetKey] ? presetKey : 'standard';
+    this.syncUiState();
+    this.refreshResultsExportUi();
   }
 
   cycleFollowShot() {
@@ -8657,9 +9353,25 @@ class MarbleRushApp {
     this.dom.btnExportVideo.addEventListener('click', () => this.exportGameVideo('gameplay'));
     this.dom.btnPreviewVideo.addEventListener('click', () => toggleVideoPreview('gameplay'));
 
+    if (this.dom.selectExportQuality) {
+      this.dom.selectExportQuality.addEventListener('change', (e) => {
+        this.setRecordQualityPreset(e.target.value);
+      });
+    }
+    if (this.dom.selectReplayQuality) {
+      this.dom.selectReplayQuality.addEventListener('change', (e) => {
+        this.setRecordQualityPreset(e.target.value);
+      });
+    }
+    if (this.dom.btnRenderGameplay) {
+      this.dom.btnRenderGameplay.addEventListener('click', () => {
+        this.enterReplayMode(0, { autoRecord: true, recordMode: 'gameplay' });
+      });
+    }
+
     if (this.dom.btnRecordCinematic) {
       this.dom.btnRecordCinematic.addEventListener('click', () => {
-        this.enterReplayMode(0, { autoRecord: true });
+        this.enterReplayMode(0, { autoRecord: true, recordMode: 'cinematic' });
       });
     }
     if (this.dom.btnPreviewCinematic) {
@@ -8824,8 +9536,9 @@ class MarbleRushApp {
       else if (e.key === '3') this.setCameraMode('leader');
       else if (e.key === '4') this.setCameraMode('topdown');
       else if (e.key === '5') this.setCameraMode('drone_top');
-      else if (e.key === '6') this.setCameraMode('finish');
-      else if (e.key === '7') this.setCameraMode('free');
+      else if (e.key === '6') this.setCameraMode('drone_side');
+      else if (e.key === '7') this.setCameraMode('finish');
+      else if (e.key === '8') this.setCameraMode('free');
       else if ((e.key === 'c' || e.key === 'C') && this.cameraMode === 'leader') {
         this.cycleFollowShot();
       } else if (e.code === 'Space' && this.cameraMode !== 'free') {

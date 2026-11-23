@@ -18,13 +18,13 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Outfit:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <!-- Full-Viewport 3D WebGL Canvas -->
+    <!-- Fullscreen 3D WebGL Canvas -->
     <div id="viewport-container">
       <canvas id="race-canvas" aria-label="Marble Rush 3D Racing Arena"></canvas>
     </div>
@@ -53,6 +53,7 @@
       <header id="top-bar">
         <div class="top-zone-left">
           <span class="brand-title">Marble Rush 3D</span>
+          <span class="top-divider" aria-hidden="true"></span>
           <button
             id="btn-toggle-config"
             class="btn btn-surface btn-sm"
@@ -69,7 +70,7 @@
             <span class="telemetry-label">Time</span>
             <span id="hud-timer" class="telemetry-value mono">00:00.00</span>
           </div>
-          <span class="telemetry-sep" aria-hidden="true">/</span>
+          <span class="telemetry-sep" aria-hidden="true"></span>
           <div class="telemetry-item">
             <span class="telemetry-label">Leader</span>
             <span id="hud-leader" class="telemetry-value">
@@ -77,21 +78,18 @@
               <span id="hud-leader-name">Ready</span>
             </span>
           </div>
-          <span class="telemetry-sep" aria-hidden="true">/</span>
+          <span class="telemetry-sep" aria-hidden="true"></span>
           <div class="telemetry-item">
             <span class="telemetry-label">Finished</span>
             <span id="hud-finished" class="telemetry-value mono">0 / 10</span>
+            <span id="hud-progress-pct" class="telemetry-sub mono">0%</span>
           </div>
-          <div class="progress-track-wrap" title="Race progress">
-            <div id="hud-progress-bar" class="progress-track-fill"></div>
-          </div>
-          <span id="hud-progress-pct" class="telemetry-value mono">0%</span>
-          <span class="telemetry-sep" aria-hidden="true">/</span>
-          <div class="telemetry-item">
-            <span class="telemetry-label">Speed</span>
+          <span class="telemetry-sep telemetry-speed-group" aria-hidden="true"></span>
+          <div class="telemetry-item telemetry-speed-group">
+            <span class="telemetry-label">Top Speed</span>
             <span id="hud-speed" class="telemetry-value mono">0.0 m/s</span>
           </div>
-          <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording gameplay video">REC</span>
+          <span id="hud-rec-badge" class="rec-indicator hidden mono" title="Recording video">REC</span>
           <span id="hud-replay-badge" class="replay-moment-badge hidden">
             <span class="replay-tag">REPLAY</span>
             <span id="hud-replay-moment-text">Auto Director</span>
@@ -99,54 +97,63 @@
         </div>
 
         <div class="top-zone-right">
-          <button id="btn-start-race" class="btn btn-primary" type="button">Start Race</button>
-          <button id="btn-pause-race" class="btn btn-surface hidden" type="button">Pause</button>
-          <button id="btn-resume-race" class="btn btn-primary hidden" type="button">Resume</button>
-          <button id="btn-restart-race" class="btn btn-surface" type="button">Restart</button>
-          <button
-            id="btn-cinematic-replay"
-            class="btn btn-accent hidden"
-            type="button"
-            title="Watch auto-cut Cinematic Replay"
-          >
-            Replay
-          </button>
-          <button
-            id="btn-view-results"
-            class="btn btn-surface hidden"
-            type="button"
-          >
-            Results
-          </button>
-          <button
-            id="btn-toggle-music"
-            class="btn btn-icon active"
-            type="button"
-            title="Toggle Relaxing Background Music"
-            aria-label="Toggle Background Music"
-          >
-            Music On
-          </button>
-          <button
-            id="btn-toggle-sound"
-            class="btn btn-icon active"
-            type="button"
-            title="Toggle Sound Effects"
-            aria-label="Toggle Sound Effects"
-          >
-            Sound On
-          </button>
-          <select
-            id="select-quality"
-            class="form-select form-select-compact form-select-topbar"
-            title="Rendering & Recording Resolution"
-            aria-label="Rendering and Recording Resolution"
-          >
-            <option value="standard">1080p Standard</option>
-            <option value="uhd4k">4K UHD</option>
-            <option value="uhd8k">8K Cinema</option>
-            <option value="master32k" selected>32K Master</option>
-          </select>
+          <div class="top-util-group">
+            <button
+              id="btn-toggle-music"
+              class="btn btn-icon active"
+              type="button"
+              title="Toggle Relaxing Background Music"
+              aria-label="Toggle Background Music"
+            >
+              Music
+            </button>
+            <button
+              id="btn-toggle-sound"
+              class="btn btn-icon active"
+              type="button"
+              title="Toggle Sound Effects"
+              aria-label="Toggle Sound Effects"
+            >
+              Sound
+            </button>
+            <select
+              id="select-quality"
+              class="form-select form-select-compact form-select-topbar"
+              title="Live Gameplay Display Resolution"
+              aria-label="Live Gameplay Display Resolution"
+            >
+              <option value="standard" selected>View: 1080p</option>
+              <option value="uhd4k">View: 4K UHD</option>
+              <option value="uhd8k">View: 8K Cinema</option>
+              <option value="master32k">View: 32K Master</option>
+            </select>
+          </div>
+          <span class="top-divider" aria-hidden="true"></span>
+          <div class="top-action-group">
+            <button id="btn-restart-race" class="btn btn-surface btn-sm" type="button">Reset</button>
+            <button
+              id="btn-cinematic-replay"
+              class="btn btn-accent btn-sm hidden"
+              type="button"
+              title="Watch auto-cut Cinematic Replay"
+            >
+              Replay
+            </button>
+            <button
+              id="btn-view-results"
+              class="btn btn-surface btn-sm hidden"
+              type="button"
+            >
+              Results
+            </button>
+            <button id="btn-start-race" class="btn btn-primary btn-sm" type="button">Start Race</button>
+            <button id="btn-pause-race" class="btn btn-surface btn-sm hidden" type="button">Pause</button>
+            <button id="btn-resume-race" class="btn btn-primary btn-sm hidden" type="button">Resume</button>
+          </div>
+        </div>
+
+        <div class="top-progress-rail" aria-hidden="true">
+          <div id="hud-progress-bar" class="progress-track-fill"></div>
         </div>
       </header>
 
@@ -160,7 +167,7 @@
             data-tab="tab-track"
             type="button"
           >
-            Track &amp; Physics
+            Track
           </button>
           <button
             class="tab-btn"
@@ -178,7 +185,7 @@
             data-tab="tab-balls"
             type="button"
           >
-            Balls &amp; Audio
+            Balls
           </button>
         </div>
 
@@ -516,7 +523,8 @@
             <option value="director">Broadcast Director</option>
             <option value="leader">Follow Leader</option>
             <option value="topdown">Top-Down Full Track</option>
-            <option value="drone_top">Drone Top Follow</option>
+            <option value="drone_top">Drone Top (Above Pack)</option>
+            <option value="drone_side">Drone Side Follow</option>
             <option value="finish">Finish &amp; Podium</option>
             <option value="free">Free Roam</option>
           </select>
@@ -592,6 +600,17 @@
               <input id="input-replay-autocam" type="checkbox" checked />
               <span>Auto Cuts</span>
             </label>
+            <select
+              id="select-replay-quality"
+              class="form-select form-select-compact form-select-replay"
+              title="Video Recording Quality"
+              aria-label="Video Recording Quality"
+            >
+              <option value="standard" selected>Rec: 1080p</option>
+              <option value="uhd4k">Rec: 4K UHD</option>
+              <option value="uhd8k">Rec: 8K Cinema</option>
+              <option value="master32k">Rec: 32K Master</option>
+            </select>
             <button id="btn-replay-record" class="cam-btn" type="button" title="Record Cinematic Highlight Video from start">
               Record Video 2
             </button>
@@ -612,8 +631,8 @@
         <span id="countdown-text">3</span>
       </div>
 
-      <!-- Winner Announcement Toast -->
-      <div id="winner-toast" class="hidden" role="status" aria-live="polite">
+      <!-- Screen-Reader Finisher Announcement (visual banner renders crisply on WebGL canvas to avoid double overlap) -->
+      <div id="winner-toast" class="sr-only hidden" role="status" aria-live="polite">
         <span id="winner-toast-swatch" class="swatch-dot"></span>
         <span id="winner-toast-text">Ball #01 Wins the Race!</span>
       </div>
@@ -637,42 +656,64 @@
         <div id="winner-spotlight" class="winner-spotlight">
           <div id="winner-badge-color" class="winner-orb"></div>
           <div class="winner-details">
-            <span class="winner-label">Race Winner</span>
+            <span class="winner-label">1st Place Winner</span>
             <h3 id="winner-title">Ball #01</h3>
             <p id="winner-time-line" class="mono">Finish Time: 00.00s</p>
           </div>
         </div>
 
-        <div id="video-export-panel" class="video-export-panel hidden">
-          <div class="video-export-info">
-            <span class="video-export-title">Video 1 · Full Gameplay Recording</span>
-            <span id="video-export-meta" class="video-export-meta mono">Preparing video...</span>
+        <div class="export-quality-bar">
+          <div class="export-quality-copy">
+            <span class="export-quality-label">Video Recording &amp; Export Quality</span>
+            <span class="export-quality-hint">Play smoothly at View quality, then render or export either video below</span>
           </div>
-          <div class="video-export-btns">
-            <button id="btn-preview-video" class="btn btn-surface btn-sm" type="button">
-              Preview Video 1
-            </button>
-            <button id="btn-export-video" class="btn btn-accent btn-sm" type="button">
-              Export Video 1
-            </button>
-          </div>
+          <select
+            id="select-export-quality"
+            class="form-select form-select-compact"
+            aria-label="Video Export Quality"
+          >
+            <option value="standard" selected>1080p Standard</option>
+            <option value="uhd4k">4K UHD (3840p)</option>
+            <option value="uhd8k">8K Cinema (5760p SSAA)</option>
+            <option value="master32k">32K Master (7680p SSAA)</option>
+          </select>
         </div>
 
-        <div id="video-export-cinematic-panel" class="video-export-panel hidden">
-          <div class="video-export-info">
-            <span class="video-export-title">Video 2 · Cinematic Shots Recording</span>
-            <span id="video-cinematic-meta" class="video-export-meta mono">Auto-cut highlights + winner &amp; leaderboard</span>
+        <div class="video-export-grid">
+          <div id="video-export-panel" class="video-export-panel hidden">
+            <div class="video-export-info">
+              <span class="video-export-title">Video 1 · Full Gameplay</span>
+              <span id="video-export-meta" class="video-export-meta mono">Preparing video...</span>
+            </div>
+            <div class="video-export-btns">
+              <button id="btn-render-gameplay" class="btn btn-surface btn-sm hidden" type="button">
+                Render in 1080p
+              </button>
+              <button id="btn-preview-video" class="btn btn-surface btn-sm" type="button">
+                Preview Video 1
+              </button>
+              <button id="btn-export-video" class="btn btn-accent btn-sm" type="button">
+                Export Video 1
+              </button>
+            </div>
           </div>
-          <div class="video-export-btns">
-            <button id="btn-record-cinematic" class="btn btn-surface btn-sm" type="button">
-              Record Cinematic
-            </button>
-            <button id="btn-preview-cinematic" class="btn btn-surface btn-sm hidden" type="button">
-              Preview Video 2
-            </button>
-            <button id="btn-export-cinematic" class="btn btn-accent btn-sm hidden" type="button">
-              Export Video 2
-            </button>
+
+          <div id="video-export-cinematic-panel" class="video-export-panel hidden">
+            <div class="video-export-info">
+              <span class="video-export-title">Video 2 · Cinematic Shots</span>
+              <span id="video-cinematic-meta" class="video-export-meta mono">Auto-cut highlights + leaderboard</span>
+            </div>
+            <div class="video-export-btns">
+              <button id="btn-record-cinematic" class="btn btn-surface btn-sm" type="button">
+                Record Video 2
+              </button>
+              <button id="btn-preview-cinematic" class="btn btn-surface btn-sm hidden" type="button">
+                Preview Video 2
+              </button>
+              <button id="btn-export-cinematic" class="btn btn-accent btn-sm hidden" type="button">
+                Export Video 2
+              </button>
+            </div>
           </div>
         </div>
 
