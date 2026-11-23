@@ -532,13 +532,11 @@ class SoundEngine {
     this.ctx = null;
     this.masterGain = null;
     this.masterComp = null;
-    this.noiseBuffer = null;
-    this.loopNoiseBuffer = null;
-    this.rollSource = null;
-    this.rollFilter = null;
-    this.rollGain = null;
-    this.rollOsc = null;
-    this.rollOscGain = null;
+    this.stadiumBus = null;
+    this.stadiumWetGain = null;
+    this.impulseClickBuffer = null;
+    this.crowdRoarBuffer = null;
+    this.applauseBuffer = null;
     this.mediaDest = null;
     this.enabled = true;
     this.musicEnabled = true;
@@ -551,27 +549,39 @@ class SoundEngine {
     this.lastClackAt = 0;
     this.lastHurdleAt = 0;
     this.lastWallAt = 0;
-    this.lastWhooshAt = 0;
-    this.crowdSource = null;
+    this.crowdSourceA = null;
+    this.crowdSourceB = null;
+    this.crowdClapSource = null;
     this.crowdFilterLow = null;
+    this.crowdFilterMid = null;
     this.crowdFilterHigh = null;
     this.crowdMurmurGain = null;
+    this.crowdRoarGain = null;
     this.crowdCheerGain = null;
+    this.crowdClapGain = null;
     this.lastCrowdSpikeAt = 0;
+    this.commentaryEnabled = true;
+    this.commentaryGain = null;
+    this.activeCommentarySource = null;
+    this.isCommentarySpeaking = false;
+    this._commentaryPlaybackId = 0;
   }
 
-  ensureContext(forceForMusic = false) {
-    if (!this.enabled && !(forceForMusic && this.musicEnabled)) return null;
+  ensureContext(forceForBus = false) {
+    if (!this.enabled && !(forceForBus && (this.musicEnabled || this.commentaryEnabled))) return null;
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return null;
       this.ctx = new AudioCtx();
       this.masterComp = this.ctx.createDynamicsCompressor();
-      this.masterComp.threshold.value = -14;
-      this.masterComp.knee.value = 18;
-      this.masterComp.ratio.value = 6;
+      this.masterComp.threshold.value = -13;
+      this.masterComp.knee.value = 16;
+      this.masterComp.ratio.value = 5;
+      this.masterComp.attack.value = 0.002;
+      this.masterComp.release.value = 0.16;
+
       this.masterGain = this.ctx.createGain();
-      this.masterGain.gain.value = 0.88;
+      this.masterGain.gain.value = 0.9;
       this.masterComp.connect(this.masterGain);
       this.masterGain.connect(this.ctx.destination);
       if (this.ctx.createMediaStreamDestination) {
@@ -579,9 +589,36 @@ class SoundEngine {
         this.masterGain.connect(this.mediaDest);
       }
 
+      // Dedicated stadium / arena early-reflection & PA hall reverb bus
+      this.stadiumBus = this.ctx.createGain();
+      this.stadiumBus.gain.value = 1.0;
+      this.stadiumWetGain = this.ctx.createGain();
+      this.stadiumWetGain.gain.value = 0.34;
+      const stadiumLp = this.ctx.createBiquadFilter();
+      stadiumLp.type = 'lowpass';
+      stadiumLp.frequency.value = 2400;
+      const tapDelays = [0.031, 0.067, 0.118, 0.179];
+      const tapGains = [0.46, 0.34, 0.24, 0.16];
+      for (let i = 0; i < tapDelays.length; i++) {
+        const d = this.ctx.createDelay(0.5);
+        d.delayTime.value = tapDelays[i];
+        const g = this.ctx.createGain();
+        g.gain.value = tapGains[i];
+        this.stadiumBus.connect(d);
+        d.connect(g);
+        g.connect(stadiumLp);
+      }
+      stadiumLp.connect(this.stadiumWetGain);
+      this.stadiumWetGain.connect(this.masterComp);
+
+      // Dedicated broadcast commentary bus routed into masterComp so Video 1 & 2 capture voice audio
+      this.commentaryGain = this.ctx.createGain();
+      this.commentaryGain.gain.value = 1.08;
+      this.commentaryGain.connect(this.masterComp);
+
       // Warm low-pass ambient music bus with gentle room echo
       this.musicGain = this.ctx.createGain();
-      this.musicGain.gain.value = this.musicEnabled ? 0.24 : 0.0001;
+      this.musicGain.gain.value = this.musicEnabled ? 0.22 : 0.0001;
       this.musicFilter = this.ctx.createBiquadFilter();
       this.musicFilter.type = 'lowpass';
       this.musicFilter.frequency.value = 920;
@@ -602,9 +639,9 @@ class SoundEngine {
       delayWet.connect(this.musicGain);
       this.musicGain.connect(this.masterGain);
 
-      this.noiseBuffer = this.createNoiseBuffer(0.14);
-      this.loopNoiseBuffer = this.createPinkLoopBuffer(1.6);
-      this.initRollingBed();
+      this.impulseClickBuffer = this.createImpulseClickBuffer(0.045);
+      this.crowdRoarBuffer = this.createCrowdRoarBuffer(4.8);
+      this.applauseBuffer = this.createApplauseBuffer(4.4);
       this.initCrowdBed();
     }
     if (this.ctx.state === 'suspended') {
@@ -621,7 +658,8 @@ class SoundEngine {
     if (this.musicEnabled) {
       const ctx = this.ensureContext(true);
       if (ctx && this.musicGain) {
-        this.musicGain.gain.setTargetAtTime(0.24, ctx.currentTime, 0.25);
+        const target = this.isCommentarySpeaking ? 0.08 : 0.22;
+        this.musicGain.gain.setTargetAtTime(target, ctx.currentTime, 0.25);
       }
       this.startMusic();
     } else {
@@ -659,14 +697,13 @@ class SoundEngine {
     const bar = chords[this.musicBarIdx % chords.length];
     this.musicBarIdx++;
 
-    // Soft sustained felt-pad voicing
     for (let i = 0; i < bar.pad.length; i++) {
       const freq = bar.pad[i];
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       osc.type = i === 0 ? 'sine' : 'triangle';
       osc.frequency.setValueAtTime(freq, now);
-      const peak = i === 0 ? 0.075 : 0.036;
+      const peak = i === 0 ? 0.072 : 0.034;
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(peak, now + 0.85);
       gain.gain.setValueAtTime(peak * 0.88, now + 2.35);
@@ -677,7 +714,6 @@ class SoundEngine {
       osc.stop(now + 3.85);
     }
 
-    // Gentle acoustic felt-mallet notes spaced smoothly across the bar
     for (let k = 0; k < bar.arp.length; k++) {
       const t0 = now + k * 0.88 + 0.18;
       const osc = this.ctx.createOscillator();
@@ -685,7 +721,7 @@ class SoundEngine {
       osc.type = 'sine';
       osc.frequency.setValueAtTime(bar.arp[k], t0);
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.linearRampToValueAtTime(0.034, t0 + 0.04);
+      gain.gain.linearRampToValueAtTime(0.032, t0 + 0.04);
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 1.45);
       osc.connect(gain);
       gain.connect(this.musicFilter);
@@ -694,173 +730,328 @@ class SoundEngine {
     }
   }
 
-  createNoiseBuffer(seconds = 0.14) {
-    const len = Math.floor(this.ctx.sampleRate * seconds);
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+  // Tight Hertzian contact impulse transient (crisp physical strike, zero wind hiss)
+  createImpulseClickBuffer(seconds = 0.045) {
+    const sr = this.ctx.sampleRate;
+    const len = Math.max(64, Math.floor(sr * seconds));
+    const buf = this.ctx.createBuffer(1, len, sr);
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-    return buf;
-  }
-
-  createPinkLoopBuffer(seconds = 1.6) {
-    const len = Math.floor(this.ctx.sampleRate * seconds);
-    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
-    const data = buf.getChannelData(0);
-    let b0 = 0;
-    let b1 = 0;
-    let b2 = 0;
-    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const env = Math.exp(-t * 185);
       const white = Math.random() * 2 - 1;
-      b0 = 0.997 * b0 + white * 0.029;
-      b1 = 0.985 * b1 + white * 0.032;
-      b2 = 0.95 * b2 + white * 0.048;
-      data[i] = Math.max(-1, Math.min(1, (b0 + b1 + b2 + white * 0.12) * 1.4));
+      data[i] = white * env;
     }
     return buf;
   }
 
-  initRollingBed() {
-    if (!this.ctx || !this.loopNoiseBuffer || this.rollSource) return;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.loopNoiseBuffer;
-    src.loop = true;
+  // Organic multi-formant stadium crowd vocal roar buffer with crossfaded seamless loop
+  createCrowdRoarBuffer(seconds = 4.8) {
+    const sr = this.ctx.sampleRate;
+    const len = Math.floor(sr * seconds);
+    const buf = this.ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
 
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 180;
-    filter.Q.value = 1.1;
+    // 4 overlapping vocal formant & murmur resonator states (simulate hundreds of voices)
+    let f1a = 0;
+    let f1b = 0;
+    let f2a = 0;
+    let f2b = 0;
+    let f3a = 0;
+    let f3b = 0;
+    let low = 0;
 
-    const gain = this.ctx.createGain();
-    gain.gain.value = 0.0001;
+    // 2-pole resonant coefficients for vocal formants: ~260Hz (murmur), ~560Hz ("ah/oh"), ~1220Hz ("ey/ya")
+    const c1 = 2 * Math.cos((2 * Math.PI * 560) / sr);
+    const r1 = 0.965;
+    const c2 = 2 * Math.cos((2 * Math.PI * 1220) / sr);
+    const r2 = 0.945;
+    const c3 = 2 * Math.cos((2 * Math.PI * 2250) / sr);
+    const r3 = 0.935;
 
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterComp);
-    src.start();
+    for (let i = 0; i < len; i++) {
+      const t = i / sr;
+      const white = Math.random() * 2 - 1;
+      low = 0.985 * low + 0.015 * white;
 
-    // Subtle glass-on-track harmonic hum
-    const osc = this.ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.value = 72;
-    const oscGain = this.ctx.createGain();
-    oscGain.gain.value = 0.0001;
-    osc.connect(oscGain);
-    oscGain.connect(this.masterComp);
-    osc.start();
+      const v1 = white - r1 * f1b + c1 * r1 * f1a;
+      f1b = f1a;
+      f1a = v1;
 
-    this.rollSource = src;
-    this.rollFilter = filter;
-    this.rollGain = gain;
-    this.rollOsc = osc;
-    this.rollOscGain = oscGain;
-  }
+      const v2 = white - r2 * f2b + c2 * r2 * f2a;
+      f2b = f2a;
+      f2a = v2;
 
-  updateRollingBed(speed, active) {
-    if (!this.ctx || !this.rollGain || !this.rollFilter || !this.rollOscGain) return;
-    const now = this.ctx.currentTime;
-    if (!this.enabled || !active || speed < 1.2) {
-      this.rollGain.gain.setTargetAtTime(0.0001, now, 0.06);
-      this.rollOscGain.gain.setTargetAtTime(0.0001, now, 0.06);
-      return;
+      const v3 = white - r3 * f3b + c3 * r3 * f3a;
+      f3b = f3a;
+      f3a = v3;
+
+      // Natural slow crowd breathing/swelling modulation (avoids flat static wind feel)
+      const swell =
+        0.74 +
+        0.16 * Math.sin(2 * Math.PI * 0.62 * t) +
+        0.1 * Math.sin(2 * Math.PI * 1.45 * t + 1.1);
+
+      const sample = (low * 1.6 + v1 * 0.065 + v2 * 0.045 + v3 * 0.025) * swell;
+      data[i] = Math.max(-0.95, Math.min(0.95, sample * 0.55));
     }
-    const norm = Math.min(1, Math.max(0, (speed - 1.2) / 24));
-    const targetNoiseGain = 0.008 + norm * 0.042;
-    const targetFilterFreq = 160 + norm * 620;
-    const targetOscFreq = 64 + norm * 92;
-    const targetOscGain = 0.004 + norm * 0.018;
 
-    this.rollGain.gain.setTargetAtTime(targetNoiseGain, now, 0.05);
-    this.rollFilter.frequency.setTargetAtTime(targetFilterFreq, now, 0.05);
-    this.rollOsc.frequency.setTargetAtTime(targetOscFreq, now, 0.05);
-    this.rollOscGain.gain.setTargetAtTime(targetOscGain, now, 0.05);
+    // Add scattered individual vocal bursts / shouts inside crowd buffer
+    const shoutCount = 42;
+    for (let k = 0; k < shoutCount; k++) {
+      const startIdx = Math.floor(Math.random() * (len - Math.floor(sr * 0.35)));
+      const durSamples = Math.floor(sr * (0.12 + Math.random() * 0.22));
+      const baseFreq = 260 + Math.random() * 340;
+      const amp = 0.05 + Math.random() * 0.07;
+      for (let j = 0; j < durSamples; j++) {
+        const u = j / durSamples;
+        const env = Math.sin(Math.PI * u);
+        const f = baseFreq * (1 + 0.14 * Math.sin(u * Math.PI));
+        const mod = Math.sin(2 * Math.PI * f * (j / sr) + Math.sin(j * 0.02) * 0.8);
+        data[startIdx + j] = Math.max(-0.98, Math.min(0.98, data[startIdx + j] + mod * env * amp));
+      }
+    }
+
+    // Seamless loop crossfade across first/last 0.25s
+    const fadeLen = Math.floor(sr * 0.25);
+    for (let i = 0; i < fadeLen; i++) {
+      const alpha = 0.5 - 0.5 * Math.cos((Math.PI * i) / fadeLen);
+      const tailIdx = len - fadeLen + i;
+      const blended = data[i] * alpha + data[tailIdx] * (1 - alpha);
+      data[i] = blended;
+      data[tailIdx] = blended;
+    }
+    return buf;
   }
+
+  // Realistic hand-clapping / stadium applause texture buffer (discrete overlapping claps)
+  createApplauseBuffer(seconds = 4.4) {
+    const sr = this.ctx.sampleRate;
+    const len = Math.floor(sr * seconds);
+    const buf = this.ctx.createBuffer(1, len, sr);
+    const data = buf.getChannelData(0);
+
+    const clapCount = 340;
+    const maxClapLen = Math.floor(sr * 0.045);
+    for (let c = 0; c < clapCount; c++) {
+      const start = Math.floor(Math.random() * (len - maxClapLen));
+      const amp = 0.14 + Math.random() * 0.26;
+      const decayRate = 110 + Math.random() * 140;
+      const palmFreq = 820 + Math.random() * 1450;
+      const snapFreq = 2100 + Math.random() * 1600;
+      let lp = 0;
+      for (let i = 0; i < maxClapLen; i++) {
+        const t = i / sr;
+        const env = (1 - Math.exp(-t * 1400)) * Math.exp(-t * decayRate);
+        const noise = Math.random() * 2 - 1;
+        lp = 0.55 * lp + 0.45 * noise;
+        const body =
+          Math.sin(2 * Math.PI * palmFreq * t) * 0.45 +
+          Math.sin(2 * Math.PI * snapFreq * t) * 0.2 +
+          (noise - lp) * 0.75;
+        const idx = start + i;
+        data[idx] = Math.max(-0.98, Math.min(0.98, data[idx] + body * env * amp));
+      }
+    }
+
+    const fadeLen = Math.floor(sr * 0.22);
+    for (let i = 0; i < fadeLen; i++) {
+      const alpha = 0.5 - 0.5 * Math.cos((Math.PI * i) / fadeLen);
+      const tailIdx = len - fadeLen + i;
+      const blended = data[i] * alpha + data[tailIdx] * (1 - alpha);
+      data[i] = blended;
+      data[tailIdx] = blended;
+    }
+    return buf;
+  }
+
+  // Rolling wind bed intentionally removed for clean physical acoustics
+  updateRollingBed() {}
 
   initCrowdBed() {
-    if (!this.ctx || !this.loopNoiseBuffer || this.crowdSource) return;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.loopNoiseBuffer;
-    src.loop = true;
-    src.playbackRate.value = 0.88;
+    if (!this.ctx || !this.crowdRoarBuffer || !this.applauseBuffer || this.crowdSourceA) return;
 
-    // Warm lower stadium murmur band
+    // Dual detuned vocal crowd streams prevent any audible loop cadence
+    const srcA = this.ctx.createBufferSource();
+    srcA.buffer = this.crowdRoarBuffer;
+    srcA.loop = true;
+    srcA.playbackRate.value = 0.96;
+
+    const srcB = this.ctx.createBufferSource();
+    srcB.buffer = this.crowdRoarBuffer;
+    srcB.loop = true;
+    srcB.playbackRate.value = 1.07;
+
+    const srcClap = this.ctx.createBufferSource();
+    srcClap.buffer = this.applauseBuffer;
+    srcClap.loop = true;
+    srcClap.playbackRate.value = 1.02;
+
+    // Warm lower stadium murmur (human speech chest resonance)
     const fLow = this.ctx.createBiquadFilter();
     fLow.type = 'bandpass';
-    fLow.frequency.value = 340;
-    fLow.Q.value = 0.72;
+    fLow.frequency.value = 280;
+    fLow.Q.value = 0.85;
     const gLow = this.ctx.createGain();
     gLow.gain.value = 0.0001;
 
-    // Bright upper cheering formant band
+    // Vocal roar formant ("Ohh / Ahh")
+    const fMid = this.ctx.createBiquadFilter();
+    fMid.type = 'bandpass';
+    fMid.frequency.value = 640;
+    fMid.Q.value = 1.1;
+    const gMid = this.ctx.createGain();
+    gMid.gain.value = 0.0001;
+
+    // Excited cheer vocal brightness ("Yaaay!")
     const fHigh = this.ctx.createBiquadFilter();
     fHigh.type = 'bandpass';
-    fHigh.frequency.value = 920;
-    fHigh.Q.value = 0.95;
+    fHigh.frequency.value = 1340;
+    fHigh.Q.value = 1.2;
     const gHigh = this.ctx.createGain();
     gHigh.gain.value = 0.0001;
 
-    src.connect(fLow);
+    // Hand-clapping / applause layer
+    const fClap = this.ctx.createBiquadFilter();
+    fClap.type = 'bandpass';
+    fClap.frequency.value = 1750;
+    fClap.Q.value = 0.7;
+    const gClap = this.ctx.createGain();
+    gClap.gain.value = 0.0001;
+
+    srcA.connect(fLow);
+    srcB.connect(fLow);
     fLow.connect(gLow);
     gLow.connect(this.masterComp);
 
-    src.connect(fHigh);
+    srcA.connect(fMid);
+    srcB.connect(fMid);
+    fMid.connect(gMid);
+    gMid.connect(this.masterComp);
+
+    srcB.connect(fHigh);
     fHigh.connect(gHigh);
     gHigh.connect(this.masterComp);
+    if (this.stadiumBus) gHigh.connect(this.stadiumBus);
 
-    src.start();
+    srcClap.connect(fClap);
+    fClap.connect(gClap);
+    gClap.connect(this.masterComp);
+    if (this.stadiumBus) gClap.connect(this.stadiumBus);
 
-    this.crowdSource = src;
+    srcA.start(0, 0.2);
+    srcB.start(0, 2.15);
+    srcClap.start(0, 0.7);
+
+    this.crowdSourceA = srcA;
+    this.crowdSourceB = srcB;
+    this.crowdClapSource = srcClap;
     this.crowdFilterLow = fLow;
+    this.crowdFilterMid = fMid;
     this.crowdFilterHigh = fHigh;
     this.crowdMurmurGain = gLow;
+    this.crowdRoarGain = gMid;
     this.crowdCheerGain = gHigh;
+    this.crowdClapGain = gClap;
   }
 
   updateCrowdExcitement(excitement01, active) {
-    if (!this.ctx || !this.crowdMurmurGain || !this.crowdCheerGain) return;
+    if (!this.ctx || !this.crowdMurmurGain || !this.crowdRoarGain || !this.crowdCheerGain || !this.crowdClapGain) return;
     const now = this.ctx.currentTime;
     if (!this.enabled || !active) {
-      this.crowdMurmurGain.gain.setTargetAtTime(0.0001, now, 0.16);
-      this.crowdCheerGain.gain.setTargetAtTime(0.0001, now, 0.16);
+      this.crowdMurmurGain.gain.setTargetAtTime(0.0001, now, 0.14);
+      this.crowdRoarGain.gain.setTargetAtTime(0.0001, now, 0.14);
+      this.crowdCheerGain.gain.setTargetAtTime(0.0001, now, 0.14);
+      this.crowdClapGain.gain.setTargetAtTime(0.0001, now, 0.14);
       return;
     }
     const e = Math.min(1, Math.max(0, excitement01 || 0));
-    const murmurGain = 0.007 + e * 0.044;
-    const cheerGain = 0.002 + Math.pow(e, 1.3) * 0.105;
+    const duck = this.isCommentarySpeaking ? 0.58 : 1.0;
+    const murmurGain = (0.014 + e * 0.048) * duck;
+    const roarGain = (0.004 + Math.pow(e, 1.15) * 0.095) * duck;
+    const cheerGain = (0.0015 + Math.pow(e, 1.35) * 0.088) * duck;
+    const clapGain = (e > 0.28 ? Math.pow((e - 0.28) / 0.72, 1.35) * 0.12 : 0.0005) * duck;
+
     this.crowdMurmurGain.gain.setTargetAtTime(murmurGain, now, 0.14);
+    this.crowdRoarGain.gain.setTargetAtTime(roarGain, now, 0.13);
     this.crowdCheerGain.gain.setTargetAtTime(cheerGain, now, 0.12);
-    this.crowdFilterLow.frequency.setTargetAtTime(320 + e * 210, now, 0.14);
-    this.crowdFilterHigh.frequency.setTargetAtTime(760 + e * 980, now, 0.12);
+    this.crowdClapGain.gain.setTargetAtTime(clapGain, now, 0.14);
+
+    this.crowdFilterLow.frequency.setTargetAtTime(260 + e * 140, now, 0.15);
+    this.crowdFilterMid.frequency.setTargetAtTime(560 + e * 240, now, 0.14);
+    this.crowdFilterHigh.frequency.setTargetAtTime(1180 + e * 520, now, 0.12);
   }
 
   playCrowdCheerSpike(strength = 0.8) {
     if (!this.enabled) return;
     const nowMs = performance.now();
-    if (nowMs - this.lastCrowdSpikeAt < 420) return;
+    if (nowMs - this.lastCrowdSpikeAt < 460) return;
     this.lastCrowdSpikeAt = nowMs;
     const ctx = this.ensureContext();
-    if (!ctx || !this.loopNoiseBuffer || !this.masterComp) return;
+    if (!ctx || !this.crowdRoarBuffer || !this.applauseBuffer || !this.masterComp) return;
     const now = ctx.currentTime;
-    const s = Math.min(1.1, Math.max(0.25, strength));
-    const src = ctx.createBufferSource();
-    src.buffer = this.loopNoiseBuffer;
-    src.loop = true;
-    const bp = ctx.createBiquadFilter();
-    bp.type = 'bandpass';
-    bp.frequency.setValueAtTime(640, now);
-    bp.frequency.exponentialRampToValueAtTime(1480, now + 0.35);
-    bp.frequency.exponentialRampToValueAtTime(920, now + 1.05);
-    bp.Q.value = 0.85;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(0.075 * s, now + 0.18);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.15);
-    src.connect(bp);
-    bp.connect(gain);
-    gain.connect(this.masterComp);
-    src.start(now);
-    src.stop(now + 1.2);
+    const s = Math.min(1.15, Math.max(0.25, strength));
+    const duck = this.isCommentarySpeaking ? 0.65 : 1.0;
+
+    // 1. Multi-formant stadium vocal cheer surge ("OOOOH -> YEAAAH!")
+    const roarOffset = Math.random() * 2.8;
+    const srcRoar = ctx.createBufferSource();
+    srcRoar.buffer = this.crowdRoarBuffer;
+    srcRoar.loop = true;
+    srcRoar.playbackRate.value = 0.98 + Math.random() * 0.08;
+
+    const f1 = ctx.createBiquadFilter();
+    f1.type = 'bandpass';
+    f1.frequency.setValueAtTime(520, now);
+    f1.frequency.exponentialRampToValueAtTime(760, now + 0.34);
+    f1.frequency.exponentialRampToValueAtTime(580, now + 1.35);
+    f1.Q.value = 1.15;
+
+    const f2 = ctx.createBiquadFilter();
+    f2.type = 'bandpass';
+    f2.frequency.setValueAtTime(1150, now);
+    f2.frequency.exponentialRampToValueAtTime(1680, now + 0.38);
+    f2.frequency.exponentialRampToValueAtTime(1240, now + 1.35);
+    f2.Q.value = 1.25;
+
+    const roarGain = ctx.createGain();
+    roarGain.gain.setValueAtTime(0.0001, now);
+    roarGain.gain.linearRampToValueAtTime(0.115 * s * duck, now + 0.16);
+    roarGain.gain.setValueAtTime(0.095 * s * duck, now + 0.48);
+    roarGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.55);
+
+    srcRoar.connect(f1);
+    srcRoar.connect(f2);
+    f1.connect(roarGain);
+    f2.connect(roarGain);
+    roarGain.connect(this.masterComp);
+    if (this.stadiumBus) roarGain.connect(this.stadiumBus);
+    srcRoar.start(now, roarOffset);
+    srcRoar.stop(now + 1.62);
+
+    // 2. Burst of crisp stadium applause / hand claps
+    const clapOffset = Math.random() * 2.4;
+    const srcClap = ctx.createBufferSource();
+    srcClap.buffer = this.applauseBuffer;
+    srcClap.loop = true;
+    srcClap.playbackRate.value = 0.96 + Math.random() * 0.1;
+
+    const fClap = ctx.createBiquadFilter();
+    fClap.type = 'bandpass';
+    fClap.frequency.value = 1850;
+    fClap.Q.value = 0.72;
+
+    const clapGain = ctx.createGain();
+    clapGain.gain.setValueAtTime(0.0001, now);
+    clapGain.gain.linearRampToValueAtTime(0.13 * s * duck, now + 0.12);
+    clapGain.gain.exponentialRampToValueAtTime(0.0001, now + 1.65);
+
+    srcClap.connect(fClap);
+    fClap.connect(clapGain);
+    clapGain.connect(this.masterComp);
+    if (this.stadiumBus) clapGain.connect(this.stadiumBus);
+    srcClap.start(now, clapOffset);
+    srcClap.stop(now + 1.72);
   }
 
   getAudioTrack() {
@@ -869,182 +1060,286 @@ class SoundEngine {
     return this.mediaDest.stream.getAudioTracks()[0] || null;
   }
 
-  playTone(freq, duration = 0.12, type = 'sine', gainVal = 0.08, endFreq = null) {
+  playTone(freq, duration = 0.12, type = 'sine', gainVal = 0.08, endFreq = null, toStadium = false, startOffset = 0) {
     if (!this.enabled) return;
     const ctx = this.ensureContext();
     if (!ctx || !this.masterComp) return;
-    const now = ctx.currentTime;
+    const t0 = ctx.currentTime + Math.max(0, startOffset);
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = type;
-    osc.frequency.setValueAtTime(freq, now);
+    osc.frequency.setValueAtTime(freq, t0);
     if (endFreq !== null) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(30, endFreq), now + duration);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(30, endFreq), t0 + duration);
     }
-    gain.gain.setValueAtTime(gainVal, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(gainVal, t0 + Math.min(0.004, duration * 0.15));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
     osc.connect(gain);
     gain.connect(this.masterComp);
-    osc.start(now);
-    osc.stop(now + duration + 0.02);
+    if (toStadium && this.stadiumBus) {
+      gain.connect(this.stadiumBus);
+    }
+    osc.start(t0);
+    osc.stop(t0 + duration + 0.025);
   }
 
-  playNoiseBurst(duration = 0.035, centerFreq = 1800, q = 2.5, gainVal = 0.08) {
+  playImpulseClick(centerFreq = 2400, q = 2.0, gainVal = 0.1, duration = 0.026, toStadium = false, startOffset = 0) {
     if (!this.enabled) return;
     const ctx = this.ensureContext();
-    if (!ctx || !this.noiseBuffer || !this.masterComp) return;
-    const now = ctx.currentTime;
+    if (!ctx || !this.impulseClickBuffer || !this.masterComp) return;
+    const t0 = ctx.currentTime + Math.max(0, startOffset);
     const src = ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
+    src.buffer = this.impulseClickBuffer;
     const filter = ctx.createBiquadFilter();
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(centerFreq, now);
+    filter.frequency.setValueAtTime(centerFreq, t0);
     filter.Q.value = q;
     const gain = ctx.createGain();
-    gain.gain.setValueAtTime(gainVal, now);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    gain.gain.setValueAtTime(gainVal, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
     src.connect(filter);
     filter.connect(gain);
     gain.connect(this.masterComp);
-    src.start(now);
-    src.stop(now + duration + 0.01);
+    if (toStadium && this.stadiumBus) {
+      gain.connect(this.stadiumBus);
+    }
+    src.start(t0);
+    src.stop(t0 + Math.min(0.044, duration + 0.01));
+  }
+
+  playBrassChordVoice(freq, startOffset, duration, peakGain = 0.07) {
+    if (!this.enabled) return;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.masterComp) return;
+    const t0 = ctx.currentTime + startOffset;
+
+    const oscA = ctx.createOscillator();
+    const oscB = ctx.createOscillator();
+    oscA.type = 'sawtooth';
+    oscB.type = 'triangle';
+    oscA.frequency.setValueAtTime(freq * 0.997, t0);
+    oscB.frequency.setValueAtTime(freq * 1.003, t0);
+
+    // Lip-brass brightness formant filter envelope
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 1.6;
+    lp.frequency.setValueAtTime(Math.max(380, freq * 1.2), t0);
+    lp.frequency.exponentialRampToValueAtTime(Math.min(3400, freq * 5.2), t0 + 0.055);
+    lp.frequency.exponentialRampToValueAtTime(Math.min(2200, freq * 3.1), t0 + duration * 0.85);
+
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(peakGain, t0 + 0.032);
+    g.gain.setValueAtTime(peakGain * 0.82, t0 + duration * 0.68);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+
+    oscA.connect(lp);
+    oscB.connect(lp);
+    lp.connect(g);
+    g.connect(this.masterComp);
+    if (this.stadiumBus) g.connect(this.stadiumBus);
+
+    oscA.start(t0);
+    oscB.start(t0);
+    oscA.stop(t0 + duration + 0.03);
+    oscB.stop(t0 + duration + 0.03);
   }
 
   playCountdown(isGo) {
     if (isGo) {
-      this.playTone(880, 0.28, 'triangle', 0.14);
-      this.playTone(440, 0.25, 'sine', 0.09);
-      setTimeout(() => this.playTone(1174.66, 0.34, 'triangle', 0.12), 55);
-      this.playNoiseBurst(0.11, 1400, 1.2, 0.08);
+      // Crisp motorsport starting-lights green tone + harmonic bell (no wind burst)
+      this.playTone(880, 0.28, 'triangle', 0.13, null, true);
+      this.playTone(1318.51, 0.34, 'sine', 0.095, null, true);
+      this.playTone(440, 0.22, 'sine', 0.07);
     } else {
-      this.playTone(440, 0.13, 'sine', 0.1);
-      this.playTone(220, 0.11, 'triangle', 0.05);
+      // Clean race pre-light timing beep
+      this.playTone(440, 0.11, 'sine', 0.095, null, true);
+      this.playTone(880, 0.07, 'sine', 0.035);
     }
   }
 
   playWin() {
-    // Victory brass-like triad + celebratory stadium crowd rush
+    if (!this.enabled) return;
     const ctx = this.ensureContext();
-    if (ctx && this.loopNoiseBuffer && this.masterComp) {
-      const now = ctx.currentTime;
-      const src = ctx.createBufferSource();
-      src.buffer = this.loopNoiseBuffer;
-      const bp = ctx.createBiquadFilter();
-      bp.type = 'bandpass';
-      bp.frequency.setValueAtTime(650, now);
-      bp.frequency.exponentialRampToValueAtTime(1450, now + 0.55);
-      bp.Q.value = 0.85;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0.001, now);
-      g.gain.linearRampToValueAtTime(0.11, now + 0.22);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 1.45);
-      src.connect(bp);
-      bp.connect(g);
-      g.connect(this.masterComp);
-      src.start(now);
-      src.stop(now + 1.5);
-    }
+    if (!ctx || !this.masterComp) return;
 
-    this.playTone(523.25, 0.2, 'triangle', 0.12);
-    setTimeout(() => this.playTone(659.25, 0.2, 'triangle', 0.12), 110);
-    setTimeout(() => this.playTone(783.99, 0.32, 'triangle', 0.14), 220);
-    setTimeout(() => {
-      this.playTone(1046.5, 0.55, 'triangle', 0.14);
-      this.playTone(523.25, 0.55, 'sine', 0.09);
-    }, 340);
+    // 1. Checkered-flag photo-finish timing bell / harmonic chime
+    this.playTone(1046.5, 0.42, 'sine', 0.1, null, true, 0);
+    this.playTone(2093.0, 0.26, 'sine', 0.055, null, true, 0);
+    this.playTone(3135.96, 0.16, 'sine', 0.03, null, true, 0);
+    this.playImpulseClick(2900, 2.4, 0.08, 0.018, true, 0);
+
+    // 2. Realistic stadium brass fanfare cadence (G4 -> C5 -> E5 -> C5/G5/C6 chord)
+    this.playBrassChordVoice(392.0, 0.03, 0.15, 0.055);
+    this.playBrassChordVoice(523.25, 0.16, 0.16, 0.062);
+    this.playBrassChordVoice(659.25, 0.29, 0.18, 0.065);
+    // Final sustained triumph horn chord with bass root support
+    this.playBrassChordVoice(261.63, 0.43, 0.85, 0.055);
+    this.playBrassChordVoice(523.25, 0.43, 0.85, 0.06);
+    this.playBrassChordVoice(659.25, 0.43, 0.82, 0.048);
+    this.playBrassChordVoice(783.99, 0.43, 0.88, 0.058);
+
+    // 3. Full stadium roar & applause eruption
+    this.lastCrowdSpikeAt = 0;
+    this.playCrowdCheerSpike(1.1);
   }
 
   playCheckpointChime() {
-    this.playTone(660, 0.08, 'sine', 0.055, 880);
-    setTimeout(() => this.playTone(987.77, 0.11, 'triangle', 0.05), 45);
+    // Clean marimba/bell finish chime for non-podium finishers
+    this.playTone(659.25, 0.11, 'sine', 0.055, null, true, 0);
+    this.playTone(987.77, 0.15, 'sine', 0.045, null, true, 0.05);
   }
 
-  playWhoosh(strength = 0.7) {
-    if (!this.enabled) return;
-    const nowMs = performance.now();
-    if (nowMs - this.lastWhooshAt < 260) return;
-    this.lastWhooshAt = nowMs;
-    const ctx = this.ensureContext();
-    if (!ctx || !this.noiseBuffer || !this.masterComp) return;
-    const now = ctx.currentTime;
-    const src = ctx.createBufferSource();
-    src.buffer = this.noiseBuffer;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(420, now);
-    filter.frequency.exponentialRampToValueAtTime(2100, now + 0.13);
-    filter.Q.value = 1.6;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.002, now);
-    gain.gain.linearRampToValueAtTime(0.085 * strength, now + 0.04);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterComp);
-    src.start(now);
-    src.stop(now + 0.15);
-  }
+  // Wind whoosh sound intentionally removed per realism request
+  playWhoosh() {}
 
   playCameraCut() {
     if (!this.ctx || !this.enabled) return;
-    this.playNoiseBurst(0.015, 3400, 3.2, 0.025);
+    this.playImpulseClick(3200, 3.0, 0.02, 0.012, false, 0);
   }
 
+  // Physical glass-on-glass marble collision (modal resonance + sub-2ms Hertzian click)
   playMarbleClack(strength = 0.7) {
+    if (!this.enabled) return;
     const nowMs = performance.now();
-    if (nowMs - this.lastClackAt < 38) return;
+    if (nowMs - this.lastClackAt < 34) return;
     this.lastClackAt = nowMs;
-    const s = Math.min(1, Math.max(0.18, strength));
-    const jitter = 0.9 + Math.random() * 0.22;
-    this.playTone(1340 * jitter, 0.042, 'sine', s * 0.068);
-    this.playTone(2580 * jitter, 0.028, 'triangle', s * 0.042);
-    this.playNoiseBurst(0.02, 2800 * jitter, 3.0, s * 0.058);
+    const s = Math.min(1, Math.max(0.16, strength));
+    const jitter = 0.91 + Math.random() * 0.19;
+
+    // Sharp crystalline contact click
+    this.playImpulseClick(4100 * jitter, 1.8, s * 0.145, 0.016, s > 0.48);
+
+    // Inharmonic stiff glass-sphere vibration modes (distinctive real marble "clack")
+    const fBase = 2120 * jitter;
+    this.playTone(fBase, 0.032, 'sine', s * 0.072, null, s > 0.55);
+    this.playTone(fBase * 1.71, 0.024, 'sine', s * 0.052, null, false);
+    this.playTone(fBase * 2.58, 0.016, 'sine', s * 0.028, null, false);
+
+    // Subtle track-coupled thud on high-energy collisions
+    if (s > 0.52) {
+      this.playTone(175 * jitter, 0.028, 'sine', s * 0.042, 92);
+    }
   }
 
+  // Realistic obstacle/hurdle material impacts (hardwood/metal bar, timber ramp, kinetic pad)
   playHurdleHit(subType = 'rotating_bar', strength = 0.8) {
+    if (!this.enabled) return;
     const nowMs = performance.now();
-    if (nowMs - this.lastHurdleAt < 42 && subType !== 'booster') return;
+    if (nowMs - this.lastHurdleAt < 40 && subType !== 'booster') return;
     if (subType !== 'booster') this.lastHurdleAt = nowMs;
 
-    const s = Math.min(1, Math.max(0.22, strength));
-    const pitchVar = 0.92 + Math.random() * 0.18;
+    const s = Math.min(1, Math.max(0.2, strength));
+    const jitter = 0.92 + Math.random() * 0.17;
 
     if (subType === 'booster') {
-      this.playTone(340, 0.2, 'sawtooth', 0.055, 1120);
-      this.playTone(540, 0.18, 'sine', 0.075, 1460);
-      this.playWhoosh(0.95);
+      // Crisp pneumatic/kinetic launch pad snap + punchy impulse (zero laser buzz, zero wind whoosh)
+      this.playTone(155, 0.075, 'sine', 0.11, 68, true);
+      this.playImpulseClick(2400, 2.2, 0.11, 0.02, true, 0);
+      this.playImpulseClick(3800, 2.6, 0.07, 0.016, false, 0.018);
+      this.playTone(580, 0.11, 'triangle', 0.045, 1160, true, 0.008);
       return;
     }
 
     if (subType === 'rotating_bar' || subType === 'spinning_wheel' || subType === 'moving_gate') {
-      this.playTone(390 * pitchVar, 0.12, 'triangle', s * 0.095, 290 * pitchVar);
-      this.playTone(840 * pitchVar, 0.09, 'sine', s * 0.06);
-      this.playNoiseBurst(0.032, 1650 * pitchVar, 2.2, s * 0.088);
+      // Hardwood / anodized-aluminum bar knock + sharp glass-marble contact tap
+      this.playImpulseClick(1750 * jitter, 2.0, s * 0.11, 0.022, s > 0.45);
+      this.playTone(255 * jitter, 0.062, 'triangle', s * 0.095, 175 * jitter, s > 0.55);
+      this.playTone(680 * jitter, 0.042, 'sine', s * 0.052, null, false);
+      this.playTone(2480 * jitter, 0.018, 'sine', s * 0.04, null, false);
     } else if (subType === 'speed_bump' || subType === 'jump_ramp') {
-      this.playTone(215 * pitchVar, 0.09, 'sine', s * 0.1, 95);
-      this.playNoiseBurst(0.025, 780, 1.5, s * 0.05);
-      if (subType === 'jump_ramp' && s > 0.5) {
-        this.playWhoosh(s * 0.75);
-      }
+      // Hollow timber/composite deck thud (zero wind whoosh)
+      this.playImpulseClick(980 * jitter, 1.5, s * 0.085, 0.024, false);
+      this.playTone(138 * jitter, 0.068, 'sine', s * 0.115, 68);
+      this.playTone(360 * jitter, 0.032, 'triangle', s * 0.048, 220);
+      this.playTone(1920 * jitter, 0.015, 'sine', s * 0.026);
     } else {
-      this.playTone(280 * pitchVar, 0.08, 'triangle', s * 0.09, 170);
-      this.playTone(560 * pitchVar, 0.05, 'sine', s * 0.045);
-      this.playNoiseBurst(0.026, 1250, 2.0, s * 0.065);
+      // Composite chicane / rail knock
+      this.playImpulseClick(1450 * jitter, 1.9, s * 0.095, 0.02, false);
+      this.playTone(215 * jitter, 0.052, 'triangle', s * 0.088, 130);
+      this.playTone(2250 * jitter, 0.018, 'sine', s * 0.032);
     }
   }
 
+  // Physical acrylic/hardwood barrier rail & track-deck landing thud
   playWallHit(strength = 0.5) {
+    if (!this.enabled) return;
     const nowMs = performance.now();
-    if (nowMs - this.lastWallAt < 70) return;
+    if (nowMs - this.lastWallAt < 62) return;
     this.lastWallAt = nowMs;
     const s = Math.min(1, Math.max(0.15, strength));
-    this.playTone(155 + s * 60, 0.055, 'sine', s * 0.06, 95);
-    this.playNoiseBurst(0.018, 920, 1.8, s * 0.03);
+    const jitter = 0.93 + Math.random() * 0.14;
+
+    this.playTone((122 + s * 38) * jitter, 0.058, 'sine', s * 0.082, 62);
+    this.playTone(310 * jitter, 0.028, 'triangle', s * 0.04, 185);
+    this.playImpulseClick(1850 * jitter, 2.1, s * 0.068, 0.018, false);
   }
 
   playRespawn() {
-    this.playTone(520, 0.09, 'sine', 0.075, 780);
-    setTimeout(() => this.playTone(780, 0.11, 'triangle', 0.065, 1040), 55);
+    this.playTone(523.25, 0.08, 'sine', 0.055, null, false, 0);
+    this.playTone(783.99, 0.1, 'sine', 0.05, null, false, 0.055);
+  }
+
+  async decodeCommentaryBase64(base64Str) {
+    if (!base64Str) return null;
+    const ctx = this.ensureContext(true);
+    if (!ctx) return null;
+    const bin = atob(base64Str);
+    const len = bin.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    return ctx.decodeAudioData(bytes.buffer.slice(0));
+  }
+
+  stopCommentary() {
+    this._commentaryPlaybackId++;
+    if (this.activeCommentarySource) {
+      try {
+        this.activeCommentarySource.onended = null;
+        this.activeCommentarySource.stop();
+        this.activeCommentarySource.disconnect();
+      } catch {
+        // Ignore already-stopped AudioBufferSourceNode
+      }
+      this.activeCommentarySource = null;
+    }
+    this.isCommentarySpeaking = false;
+    if (this.ctx && this.musicGain && this.musicEnabled) {
+      this.musicGain.gain.setTargetAtTime(0.24, this.ctx.currentTime, 0.22);
+    }
+  }
+
+  playCommentaryBuffer(audioBuffer, onEnded = null) {
+    if (!this.commentaryEnabled || !audioBuffer) return false;
+    const ctx = this.ensureContext(true);
+    if (!ctx || !this.commentaryGain) return false;
+    this.stopCommentary();
+    const playId = this._commentaryPlaybackId;
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(this.commentaryGain);
+    this.activeCommentarySource = src;
+    this.isCommentarySpeaking = true;
+
+    if (this.musicGain && this.musicEnabled) {
+      this.musicGain.gain.setTargetAtTime(0.08, ctx.currentTime, 0.12);
+    }
+
+    src.onended = () => {
+      if (this._commentaryPlaybackId !== playId) return;
+      this.activeCommentarySource = null;
+      this.isCommentarySpeaking = false;
+      if (this.ctx && this.musicGain && this.musicEnabled) {
+        this.musicGain.gain.setTargetAtTime(0.24, this.ctx.currentTime, 0.28);
+      }
+      if (typeof onEnded === 'function') onEnded();
+    };
+    src.start(ctx.currentTime);
+    return true;
   }
 }
 
@@ -1312,6 +1607,267 @@ class GameplayRecorder {
 }
 
 // ============================================================================
+// Perceptual Ball Color Namer & Live AI Broadcast Commentary Engine
+// ============================================================================
+function describeBallColorName(hexStr) {
+  if (!hexStr || typeof hexStr !== 'string') return 'Racing';
+  let clean = hexStr.trim().replace('#', '');
+  if (clean.length === 3) {
+    clean = clean[0] + clean[0] + clean[1] + clean[1] + clean[2] + clean[2];
+  }
+  const num = parseInt(clean, 16);
+  if (!Number.isFinite(num)) return 'Racing';
+  const r = ((num >> 16) & 255) / 255;
+  const g = ((num >> 8) & 255) / 255;
+  const b = (num & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) * 0.5;
+  const d = max - min;
+  if (d < 0.1) {
+    if (l < 0.22) return 'Charcoal Black';
+    if (l > 0.8) return 'Pearl White';
+    return 'Titanium Silver';
+  }
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  if (s < 0.18) {
+    if (l < 0.3) return 'Slate Grey';
+    if (l > 0.72) return 'Silver';
+    return 'Steel Grey';
+  }
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) * 60;
+  else if (max === g) h = ((b - r) / d + 2) * 60;
+  else h = ((r - g) / d + 4) * 60;
+
+  if (h < 14 || h >= 345) return l < 0.42 ? 'Crimson Red' : 'Red';
+  if (h < 34) return l < 0.44 ? 'Burnt Orange' : 'Orange';
+  if (h < 56) return l < 0.48 ? 'Amber Gold' : 'Yellow';
+  if (h < 82) return 'Lime Green';
+  if (h < 152) return l < 0.42 ? 'Emerald Green' : 'Green';
+  if (h < 188) return 'Teal';
+  if (h < 212) return 'Sky Blue';
+  if (h < 252) return l < 0.42 ? 'Cobalt Blue' : 'Blue';
+  if (h < 288) return 'Violet';
+  if (h < 326) return 'Magenta';
+  return 'Rose Pink';
+}
+
+class CommentaryEngine {
+  constructor(soundEngine, onCaptionChange) {
+    this.sound = soundEngine;
+    this.onCaptionChange = onCaptionChange;
+    this.enabled = true;
+    this.inFlight = false;
+    this.pendingEvent = null;
+    this.lastRequestAt = 0;
+    this.lastEventAtByType = new Map();
+    this.recentLines = [];
+    this.generationId = 0;
+    this.captionHideTimer = null;
+    this.serverConfigured = null;
+    this.unavailableNotified = false;
+  }
+
+  async checkAvailability() {
+    try {
+      const resp = await fetch('/api/health');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      this.serverConfigured = Boolean(data?.commentaryAvailable);
+    } catch {
+      // Network status resolved lazily on demand
+    }
+  }
+
+  setEnabled(enabled) {
+    this.enabled = Boolean(enabled);
+    this.sound.commentaryEnabled = this.enabled;
+    if (!this.enabled) {
+      this.resetSession();
+    }
+  }
+
+  resetSession() {
+    this.generationId++;
+    this.pendingEvent = null;
+    this.inFlight = false;
+    this.lastRequestAt = 0;
+    this.lastEventAtByType.clear();
+    this.recentLines = [];
+    this.unavailableNotified = false;
+    clearTimeout(this.captionHideTimer);
+    this.sound.stopCommentary();
+    if (this.onCaptionChange) {
+      this.onCaptionChange('', { hidden: true });
+    }
+  }
+
+  showCaption(text, { isError = false, durationMs = 4600 } = {}) {
+    clearTimeout(this.captionHideTimer);
+    if (this.onCaptionChange) {
+      this.onCaptionChange(text, { hidden: !text, isError });
+    }
+    if (text && durationMs > 0) {
+      this.captionHideTimer = setTimeout(() => {
+        if (this.onCaptionChange) {
+          this.onCaptionChange('', { hidden: true });
+        }
+      }, durationMs);
+    }
+  }
+
+  enqueue(event) {
+    if (!this.enabled || !event || !event.summary) return;
+    if (this.serverConfigured === false) {
+      if (!this.unavailableNotified) {
+        this.unavailableNotified = true;
+        this.showCaption('Live commentary requires GEMINI_API_KEY configured on the server.', {
+          isError: true,
+          durationMs: 4200,
+        });
+      }
+      return;
+    }
+
+    const now = performance.now();
+    const isPriorityFinish = event.eventType === 'finish' || (event.priority || 0) >= 9;
+    const typeCooldowns = {
+      race_start: 10000,
+      lead_change: 3400,
+      collision: 4200,
+      hurdle_hit: 4600,
+      big_air: 5200,
+      finish: 1200,
+    };
+    const typeCd = typeCooldowns[event.eventType] ?? 4200;
+    const prevTypeAt = this.lastEventAtByType.get(event.eventType) ?? 0;
+    if (!isPriorityFinish && now - prevTypeAt < typeCd) return;
+    if (!isPriorityFinish && now - this.lastRequestAt < 3000) {
+      if (
+        !this.pendingEvent ||
+        (event.priority || 0) > (this.pendingEvent.priority || 0)
+      ) {
+        this.pendingEvent = { ...event, queuedAt: now };
+      }
+      return;
+    }
+
+    if (this.inFlight || this.sound.isCommentarySpeaking) {
+      if (
+        isPriorityFinish ||
+        !this.pendingEvent ||
+        (event.priority || 0) >= (this.pendingEvent.priority || 0)
+      ) {
+        this.pendingEvent = { ...event, queuedAt: now };
+      }
+      return;
+    }
+
+    this.dispatch(event);
+  }
+
+  flushPending() {
+    if (!this.enabled || this.inFlight || this.sound.isCommentarySpeaking || !this.pendingEvent) {
+      return;
+    }
+    const next = this.pendingEvent;
+    this.pendingEvent = null;
+    const ageMs = performance.now() - (next.queuedAt || 0);
+    if (ageMs > 3800 && next.eventType !== 'finish') {
+      return;
+    }
+    this.dispatch(next);
+  }
+
+  async dispatch(event) {
+    const gen = this.generationId;
+    const now = performance.now();
+    this.inFlight = true;
+    this.lastRequestAt = now;
+    this.lastEventAtByType.set(event.eventType, now);
+
+    try {
+      const resp = await fetch('/api/commentary', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventType: event.eventType,
+          summary: event.summary,
+          trackName: event.trackName || '',
+          mapName: event.mapName || '',
+          raceTimeSec: event.raceTime ?? 0,
+          recentLines: this.recentLines.slice(-4),
+        }),
+      });
+
+      const payload = await resp.json().catch(() => ({}));
+      if (gen !== this.generationId || !this.enabled) return;
+
+      if (!resp.ok || !payload?.ok) {
+        if (payload?.code === 'MISSING_API_KEY') {
+          this.serverConfigured = false;
+          if (!this.unavailableNotified) {
+            this.unavailableNotified = true;
+            this.showCaption(payload?.error || 'Commentary unavailable (API key missing).', {
+              isError: true,
+              durationMs: 4500,
+            });
+          }
+        } else {
+          this.showCaption(payload?.error || 'Live commentary temporarily busy.', {
+            isError: true,
+            durationMs: 2800,
+          });
+        }
+        return;
+      }
+
+      const line = String(payload.text || '').trim();
+      if (!line || !payload.audioBase64) return;
+      this.recentLines.push(line);
+      if (this.recentLines.length > 8) this.recentLines.shift();
+
+      const audioBuffer = await this.sound.decodeCommentaryBase64(payload.audioBase64);
+      if (gen !== this.generationId || !this.enabled || !audioBuffer) return;
+
+      if (typeof event.onClipReady === 'function') {
+        event.onClipReady({
+          time: event.raceTime ?? 0,
+          text: line,
+          audioBuffer,
+        });
+      }
+
+      const durationMs = Math.max(2400, Math.round(audioBuffer.duration * 1000) + 700);
+      this.showCaption(line, { isError: false, durationMs });
+      this.sound.playCommentaryBuffer(audioBuffer, () => {
+        if (gen === this.generationId) {
+          this.flushPending();
+        }
+      });
+    } catch (err) {
+      if (gen === this.generationId && this.enabled) {
+        this.showCaption(`Commentary error: ${err?.message || 'Network failure'}`, {
+          isError: true,
+          durationMs: 3200,
+        });
+      }
+    } finally {
+      this.inFlight = false;
+      if (gen === this.generationId && !this.sound.isCommentarySpeaking && this.pendingEvent) {
+        const nextAge = performance.now() - (this.pendingEvent.queuedAt || 0);
+        if (nextAge <= 3800 || this.pendingEvent.eventType === 'finish') {
+          setTimeout(() => this.flushPending(), 120);
+        } else {
+          this.pendingEvent = null;
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
 // Cinematic Physics Replay Recorder & Intense-Moment Director
 // ============================================================================
 class ReplaySystem {
@@ -1325,6 +1881,7 @@ class ReplaySystem {
     this.frames = [];
     this.events = [];
     this.audioCues = [];
+    this.commentaryClips = [];
     this.highlights = [];
     this.shots = [];
     this.totalDuration = 0;
@@ -1340,6 +1897,12 @@ class ReplaySystem {
     this.autoDirector = true;
     this.activeShotIdx = -1;
     this.prevTimeForAudio = 0;
+  }
+
+  recordCommentaryClip(time, text, audioBuffer) {
+    if (!text || !audioBuffer || this.commentaryClips.length > 60) return;
+    this.commentaryClips.push({ time, text, audioBuffer });
+    this.commentaryClips.sort((a, b) => a.time - b.time);
   }
 
   hasData() {
@@ -2414,6 +2977,9 @@ class MarbleRushApp {
       this.config.ballCount,
       this.config.allowDuplicateColors
     );
+    this.ballNames = Array.from({ length: this.config.ballCount }, (_, i) =>
+      this.getDefaultBallName(i)
+    );
 
     this.raceState = 'READY'; // READY | COUNTDOWN | RACING | PAUSED | FINISHED | REPLAY
     this.cameraMode = 'overview';
@@ -2430,6 +2996,10 @@ class MarbleRushApp {
       liveBallId: 0,
     };
     this.replay = new ReplaySystem();
+    this.commentary = new CommentaryEngine(this.sound, (text, opts) =>
+      this.renderCommentaryCaption(text, opts)
+    );
+    this.startCommentarySent = false;
     this.lastLeaderId = 0;
     this.raceElapsedTime = 0;
     this.countdownRemaining = 0;
@@ -2449,6 +3019,8 @@ class MarbleRushApp {
     this.lastReplayWinnerBannerId = -1;
     this.replayAnnouncedBallIds = new Set();
     this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
     this.endLeaderboardActive = false;
     this.endLeaderboardSorted = [];
     this.minimapCache = null;
@@ -2484,6 +3056,7 @@ class MarbleRushApp {
     this.waterUniforms = null;
     this.physicsDebugEnabled = false;
     this.physicsDebugMesh = null;
+    this.showBallLabels = true;
     this._debugRgbBuffer = new Float32Array(0);
     this.hudScene = null;
     this.hudCamera = null;
@@ -2573,6 +3146,10 @@ class MarbleRushApp {
       selectQuality: document.getElementById('select-quality'),
       btnToggleMusic: document.getElementById('btn-toggle-music'),
       btnToggleSound: document.getElementById('btn-toggle-sound'),
+      btnToggleCommentary: document.getElementById('btn-toggle-commentary'),
+      commentaryBanner: document.getElementById('commentary-banner'),
+      commentaryTag: document.getElementById('commentary-tag'),
+      commentaryText: document.getElementById('commentary-text'),
 
       // Config controls
       inputBallCount: document.getElementById('input-ball-count'),
@@ -2596,7 +3173,9 @@ class MarbleRushApp {
       btnObstaclesNone: document.getElementById('btn-obstacles-none'),
 
       btnRandomizeColors: document.getElementById('btn-randomize-colors'),
+      btnResetBallNames: document.getElementById('btn-reset-ball-names'),
       inputAllowDuplicates: document.getElementById('input-allow-duplicates'),
+      inputShowBallLabels: document.getElementById('input-show-ball-labels'),
       ballCountCaption: document.getElementById('ball-count-caption'),
       ballListContainer: document.getElementById('ball-list-container'),
 
@@ -2613,7 +3192,7 @@ class MarbleRushApp {
       selectPalette: document.getElementById('select-palette'),
       inputMusicEnabled: document.getElementById('input-music-enabled'),
       inputSoundEnabled: document.getElementById('input-sound-enabled'),
-      btnToggleMusic: document.getElementById('btn-toggle-music'),
+      inputCommentaryEnabled: document.getElementById('input-commentary-enabled'),
 
       cameraDock: document.getElementById('camera-dock'),
       selectCameraMode: document.getElementById('select-camera-mode'),
@@ -3097,7 +3676,7 @@ class MarbleRushApp {
       const child = group.children[0];
       group.remove(child);
       child.traverse((obj) => {
-        if (obj.geometry && obj.geometry !== this.shared.ballGeo) {
+        if (!obj.isSprite && obj.geometry && obj.geometry !== this.shared.ballGeo) {
           obj.geometry.dispose();
         }
         if (obj.material) {
@@ -3151,6 +3730,10 @@ class MarbleRushApp {
     this.lastReplayWinnerBannerId = -1;
     this.replayAnnouncedBallIds = new Set();
     this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
+    this.startCommentarySent = false;
+    this.commentary.resetSession();
     this.endLeaderboardActive = false;
     this.endLeaderboardSorted = [];
     this.dom.hudRecBadge.classList.add('hidden');
@@ -5466,6 +6049,128 @@ class MarbleRushApp {
   // ==========================================================================
   // Spawn Balls on Dynamic Starting Grid
   // ==========================================================================
+  drawBallLabelCanvas(canvas, ctx, nameText, colorHex) {
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const label = String(nameText || 'Ball').trim().slice(0, 20) || 'Ball';
+    ctx.save();
+    ctx.font = '700 36px Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+    const textW = Math.ceil(ctx.measureText(label).width);
+    const padX = 22;
+    const dotSize = 18;
+    const dotGap = 14;
+    const pillW = Math.min(w - 16, Math.max(118, textW + padX * 2 + dotSize + dotGap));
+    const pillH = 68;
+    const pillX = (w - pillW) * 0.5;
+    const pillY = 14;
+    const radius = 16;
+
+    // Subtle soft drop shadow for clean legibility against sky, sand, forest, and bright track
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.52)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+
+    // Rounded badge + small downward pointer chevron centered at bottom
+    ctx.beginPath();
+    ctx.moveTo(pillX + radius, pillY);
+    ctx.lineTo(pillX + pillW - radius, pillY);
+    ctx.quadraticCurveTo(pillX + pillW, pillY, pillX + pillW, pillY + radius);
+    ctx.lineTo(pillX + pillW, pillY + pillH - radius);
+    ctx.quadraticCurveTo(pillX + pillW, pillY + pillH, pillX + pillW - radius, pillY + pillH);
+    ctx.lineTo(w * 0.5 + 11, pillY + pillH);
+    ctx.lineTo(w * 0.5, pillY + pillH + 13);
+    ctx.lineTo(w * 0.5 - 11, pillY + pillH);
+    ctx.lineTo(pillX + radius, pillY + pillH);
+    ctx.quadraticCurveTo(pillX, pillY + pillH, pillX, pillY + pillH - radius);
+    ctx.lineTo(pillX, pillY + radius);
+    ctx.quadraticCurveTo(pillX, pillY, pillX + radius, pillY);
+    ctx.closePath();
+
+    ctx.fillStyle = 'rgba(10, 14, 24, 0.86)';
+    ctx.fill();
+
+    ctx.shadowColor = 'transparent';
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.34)';
+    ctx.stroke();
+
+    // Colored marble swatch dot on the left inside the pill
+    const dotCx = pillX + padX + dotSize * 0.5;
+    const dotCy = pillY + pillH * 0.5;
+    ctx.beginPath();
+    ctx.arc(dotCx, dotCy, dotSize * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle = colorHex || '#f59e0b';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.88)';
+    ctx.stroke();
+
+    // Crisp ball name text
+    ctx.fillStyle = '#f8fafc';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const maxTextW = pillW - padX * 2 - dotSize - dotGap;
+    ctx.fillText(label, dotCx + dotSize * 0.5 + dotGap, pillY + pillH * 0.52, maxTextW);
+    ctx.restore();
+  }
+
+  createBallLabelSprite(nameText, colorHex) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 112;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      this.drawBallLabelCanvas(canvas, ctx, nameText, colorHex);
+    }
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    if (this.renderer?.capabilities?.getMaxAnisotropy) {
+      tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+    }
+    tex.needsUpdate = true;
+
+    const mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthTest: true,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const sprite = new THREE.Sprite(mat);
+    sprite.center.set(0.5, 0.0);
+    sprite.renderOrder = 8;
+    sprite.visible = this.showBallLabels;
+    return { sprite, canvas, ctx, tex };
+  }
+
+  updateBallLabelTexture(ball) {
+    if (!ball || !ball.labelCanvas || !ball.labelCtx || !ball.labelTex) return;
+    this.drawBallLabelCanvas(ball.labelCanvas, ball.labelCtx, ball.name, ball.color);
+    ball.labelTex.needsUpdate = true;
+  }
+
+  updateBallNameLabels() {
+    if (!this.balls || this.balls.length === 0 || !this.camera) return;
+    const show = Boolean(this.showBallLabels);
+    const camPos = this.camera.position;
+    for (let i = 0; i < this.balls.length; i++) {
+      const ball = this.balls[i];
+      const sp = ball.labelSprite;
+      if (!sp) continue;
+      sp.visible = show;
+      if (!show) continue;
+      const mp = ball.mesh.position;
+      sp.position.set(mp.x, mp.y + BALL_RADIUS + 0.2, mp.z);
+      const dist = sp.position.distanceTo(camPos);
+      const worldH = THREE.MathUtils.clamp(dist * 0.042, 0.34, 1.45);
+      sp.scale.set(worldH * (512 / 112), worldH, 1);
+    }
+  }
+
   spawnBalls() {
     const count = this.config.ballCount;
     const { cols } = this.trackData;
@@ -5490,6 +6195,7 @@ class MarbleRushApp {
         .addScaledVector(st.U, BALL_RADIUS + 0.04);
 
       const colorHex = this.ballColors[i] || '#f59e0b';
+      const ballName = this.getBallName(i);
       const mat = new THREE.MeshPhysicalMaterial({
         color: setRichMarbleColor(new THREE.Color(), colorHex),
         map: this.shared.marbleTex,
@@ -5508,6 +6214,10 @@ class MarbleRushApp {
       mesh.receiveShadow = true;
       mesh.userData.ballIndex = i;
       this.ballGroup.add(mesh);
+
+      const labelRes = this.createBallLabelSprite(ballName, colorHex);
+      labelRes.sprite.position.set(spawnPos.x, spawnPos.y + BALL_RADIUS + 0.2, spawnPos.z);
+      this.ballGroup.add(labelRes.sprite);
 
       // Optional experimental variance (off by default so all balls are physically identical)
       const density = this.config.experimentalVariance
@@ -5534,9 +6244,13 @@ class MarbleRushApp {
 
       this.balls.push({
         id: i,
-        name: `Ball #${String(i + 1).padStart(2, '0')}`,
+        name: ballName,
         color: colorHex,
         mesh,
+        labelSprite: labelRes.sprite,
+        labelCanvas: labelRes.canvas,
+        labelCtx: labelRes.ctx,
+        labelTex: labelRes.tex,
         body,
         stationIdx: Math.max(0, Math.floor((sPos - this.trackData.sStart) / this.trackData.ds)),
         progressMeters: 0,
@@ -5558,6 +6272,7 @@ class MarbleRushApp {
         currQuat: new THREE.Quaternion(),
       });
     }
+    this.updateBallNameLabels();
   }
 
   // ==========================================================================
@@ -5581,6 +6296,10 @@ class MarbleRushApp {
     this.gameplayReplayEndHold = 0;
     this.crowdExcitement = 0.15;
     this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
+    this.startCommentarySent = false;
+    this.commentary.resetSession();
     this.endLeaderboardActive = false;
     this.endLeaderboardSorted = [];
     this.hideCanvasOverlay();
@@ -5647,10 +6366,37 @@ class MarbleRushApp {
       if (this.balls[i]) {
         this.balls[i].color = hex;
         setRichMarbleColor(this.balls[i].mesh.material.color, hex);
+        this.updateBallLabelTexture(this.balls[i]);
       }
     }
     this.renderBallColorEditor();
     this.updateLeaderboard(true);
+  }
+
+  getDefaultBallName(index) {
+    return `Ball #${String(index + 1).padStart(2, '0')}`;
+  }
+
+  getBallName(index) {
+    const custom = this.ballNames?.[index];
+    if (typeof custom === 'string' && custom.trim().length > 0) {
+      return custom.trim().slice(0, 20);
+    }
+    return this.getDefaultBallName(index);
+  }
+
+  resetBallNames() {
+    this.ballNames = Array.from({ length: this.config.ballCount }, (_, i) =>
+      this.getDefaultBallName(i)
+    );
+    for (let i = 0; i < this.balls.length; i++) {
+      this.balls[i].name = this.getBallName(i);
+      this.updateBallLabelTexture(this.balls[i]);
+    }
+    this.renderBallColorEditor();
+    this.updateLeaderboard(true);
+    this.updateTelemetryHud();
+    this.renderBroadcastHudCanvas(true);
   }
 
   resetSettings() {
@@ -5662,6 +6408,9 @@ class MarbleRushApp {
       this.config.palette,
       this.config.ballCount,
       this.config.allowDuplicateColors
+    );
+    this.ballNames = Array.from({ length: this.config.ballCount }, (_, i) =>
+      this.getDefaultBallName(i)
     );
     this.renderBallColorEditor();
     this.syncSettingsControlsToDom();
@@ -5785,24 +6534,58 @@ class MarbleRushApp {
         : rank === 1
           ? 'WINNER'
           : '';
-    this.activeFinishBanners = this.activeFinishBanners.filter((b) => b.id !== ball.id);
-    this.activeFinishBanners.unshift({
+    const entry = {
       id: ball.id,
       rank,
       name: ball.name,
       color: ball.color,
       finishTime: ball.finishTime,
       gap,
-      remaining: rank === 1 ? 3.2 : 2.35,
-    });
-    if (this.activeFinishBanners.length > 2) {
-      this.activeFinishBanners.length = 2;
+      remaining: rank === 1 ? 3.2 : 1.75,
+    };
+    const nowMs = performance.now();
+
+    // Never stack multiple banners over track/HUD — hold 1 clean banner at a time
+    // and protect rank-1 WINNER display before cycling queued finishers cleanly.
+    if (rank === 1) {
+      this.activeFinishBanners = [entry];
+      this.finishBannerQueue = this.finishBannerQueue.filter((b) => b.id !== ball.id);
+      this.finishBannerLockUntil = nowMs + 2200;
+      this.renderBroadcastHudCanvas(true);
+      return;
     }
+
+    if (
+      this.activeFinishBanners.length > 0 &&
+      (nowMs < this.finishBannerLockUntil || this.activeFinishBanners[0].remaining > 0.7)
+    ) {
+      if (!this.finishBannerQueue.some((b) => b.id === ball.id) && this.activeFinishBanners[0].id !== ball.id) {
+        if (this.finishBannerQueue.length < 3) {
+          this.finishBannerQueue.push(entry);
+        }
+      }
+      return;
+    }
+
+    this.activeFinishBanners = [entry];
     this.renderBroadcastHudCanvas(true);
   }
 
   showCanvasWinnerBanner(winnerBall) {
     this.pushFinishBanner(winnerBall, winnerBall?.finishTime ?? null);
+  }
+
+  truncateCanvasText(ctx, text, maxWidth) {
+    if (!text) return '';
+    if (ctx.measureText(text).width <= maxWidth) return text;
+    let lo = 0;
+    let hi = text.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(`${text.slice(0, mid)}…`).width <= maxWidth) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo > 0 ? `${text.slice(0, lo)}…` : '…';
   }
 
   showCanvasEndLeaderboard(sorted) {
@@ -5861,18 +6644,22 @@ class MarbleRushApp {
         ctx.strokeStyle = 'rgba(255,255,255,0.65)';
         ctx.stroke();
 
-        ctx.font = `700 ${34 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillText(`1ST PLACE: ${winner.name.toUpperCase()}`, cx + 80 * k, cy + 84 * k);
-
         const wTime =
           winner.finishTime !== null
             ? `${winner.finishTime.toFixed(2)}s`
             : `${winner.progressMeters.toFixed(1)}m`;
         ctx.font = `700 ${30 * k}px "JetBrains Mono", monospace`;
+        const wTimeW = ctx.measureText(wTime).width;
         ctx.textAlign = 'right';
         ctx.fillStyle = '#68d391';
         ctx.fillText(wTime, cx + cardW - 32 * k, cy + 84 * k);
+
+        ctx.font = `700 ${34 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffffff';
+        const wMaxNameW = Math.max(120 * k, cardW - 128 * k - wTimeW);
+        const wTitle = this.truncateCanvasText(ctx, `1ST PLACE: ${winner.name.toUpperCase()}`, wMaxNameW);
+        ctx.fillText(wTitle, cx + 80 * k, cy + 84 * k);
       }
 
       ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
@@ -5906,7 +6693,8 @@ class MarbleRushApp {
 
         ctx.font = `600 ${25 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
         ctx.fillStyle = '#f1f0ec';
-        ctx.fillText(b.name, cx + 150 * k, ry);
+        const rowMaxNameW = Math.max(120 * k, cardW - 360 * k);
+        ctx.fillText(this.truncateCanvasText(ctx, b.name, rowMaxNameW), cx + 150 * k, ry);
 
         ctx.textAlign = 'right';
         ctx.font = `600 ${23 * k}px "JetBrains Mono", monospace`;
@@ -6133,7 +6921,7 @@ class MarbleRushApp {
         ctx.textAlign = 'left';
         ctx.font = `600 ${11 * k}px "Plus Jakarta Sans", Inter, system-ui, sans-serif`;
         ctx.fillStyle = '#f1f0ec';
-        ctx.fillText(b.name, lx + 35 * k, ry);
+        ctx.fillText(this.truncateCanvasText(ctx, b.name, cardW - 92 * k), lx + 35 * k, ry);
 
         const isFinishedShown =
           this.raceState === 'REPLAY'
@@ -6160,70 +6948,78 @@ class MarbleRushApp {
       ctx.restore();
     }
 
-    // 4. Slim Top-Center Finisher Notification Banner (tight to top edge, single-clean presentation)
+    // 4. Single Non-Overlapping Top-Center Finisher Notification Banner
     if (this.activeFinishBanners.length > 0) {
       anyDrawn = true;
-      const boxW = Math.min(w - 460 * k, 410 * k);
+      const bn = this.activeFinishBanners[0];
+      const standingsLeft = activeRaceOrReplay ? w - 198 * k : w - 14 * k;
+      const safeSpan = Math.max(210 * k, standingsLeft - 28 * k);
+      const boxW = Math.min(safeSpan, 410 * k);
       const boxH = 42 * k;
-      const gapY = 6 * k;
-      const bx = (w - boxW) * 0.5;
+      const bx = Math.min((w - boxW) * 0.5, standingsLeft - boxW - 14 * k);
+      const by = (w < 860 ? 94 : 60) * k;
 
       ctx.save();
-      for (let i = 0; i < this.activeFinishBanners.length; i++) {
-        const bn = this.activeFinishBanners[i];
-        const by = 58 * k + i * (boxH + gapY);
-        const borderCol =
-          bn.rank === 1
-            ? 'rgba(224, 169, 67, 0.94)'
-            : bn.rank === 2
-              ? 'rgba(203, 213, 225, 0.85)'
-              : bn.rank === 3
-                ? 'rgba(217, 119, 6, 0.85)'
-                : 'rgba(110, 168, 224, 0.78)';
-        const tagCol =
-          bn.rank === 1
-            ? '#e0a943'
-            : bn.rank === 2
-              ? '#e2e8f0'
-              : bn.rank === 3
-                ? '#f59e0b'
-                : '#7dd3fc';
+      const borderCol =
+        bn.rank === 1
+          ? 'rgba(224, 169, 67, 0.94)'
+          : bn.rank === 2
+            ? 'rgba(203, 213, 225, 0.85)'
+            : bn.rank === 3
+              ? 'rgba(217, 119, 6, 0.85)'
+              : 'rgba(110, 168, 224, 0.78)';
+      const tagCol =
+        bn.rank === 1
+          ? '#e0a943'
+          : bn.rank === 2
+            ? '#e2e8f0'
+            : bn.rank === 3
+              ? '#f59e0b'
+              : '#7dd3fc';
 
-        ctx.fillStyle = 'rgba(13, 16, 22, 0.88)';
-        ctx.strokeStyle = borderCol;
-        ctx.lineWidth = 1.6 * k;
-        ctx.beginPath();
-        if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 7 * k);
-        else ctx.rect(bx, by, boxW, boxH);
-        ctx.fill();
-        ctx.stroke();
+      ctx.fillStyle = 'rgba(13, 16, 22, 0.9)';
+      ctx.strokeStyle = borderCol;
+      ctx.lineWidth = 1.6 * k;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(bx, by, boxW, boxH, 7 * k);
+      else ctx.rect(bx, by, boxW, boxH);
+      ctx.fill();
+      ctx.stroke();
 
-        const cy = by + boxH * 0.5;
-        ctx.beginPath();
-        ctx.arc(bx + 20 * k, cy, 7.5 * k, 0, Math.PI * 2);
-        ctx.fillStyle = bn.color || '#ffffff';
-        ctx.fill();
-        ctx.lineWidth = 1.2 * k;
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-        ctx.stroke();
+      const cy = by + boxH * 0.5;
+      ctx.beginPath();
+      ctx.arc(bx + 20 * k, cy, 7.5 * k, 0, Math.PI * 2);
+      ctx.fillStyle = bn.color || '#ffffff';
+      ctx.fill();
+      ctx.lineWidth = 1.2 * k;
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.stroke();
 
-        ctx.font = `700 ${13 * k}px "JetBrains Mono", monospace`;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = tagCol;
-        ctx.fillText(this.formatOrdinal(bn.rank), bx + 36 * k, cy);
+      const ordTxt = this.formatOrdinal(bn.rank);
+      ctx.font = `700 ${13 * k}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = tagCol;
+      const ordX = bx + 35 * k;
+      ctx.fillText(ordTxt, ordX, cy);
+      const ordW = ctx.measureText(ordTxt).width;
 
-        ctx.font = `700 ${15.5 * k}px "Outfit", "Plus Jakarta Sans", system-ui, sans-serif`;
-        ctx.fillStyle = '#f4f1e8';
-        ctx.fillText(bn.name.toUpperCase(), bx + 84 * k, cy);
+      const timeLabel = bn.finishTime !== null ? `${bn.finishTime.toFixed(2)}s` : '';
+      const rightTxt = bn.gap ? `${timeLabel} · ${bn.gap}` : timeLabel;
+      ctx.font = `600 ${12.5 * k}px "JetBrains Mono", monospace`;
+      const rightW = ctx.measureText(rightTxt).width;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#68d391';
+      const rightEdgeX = bx + boxW - 14 * k;
+      ctx.fillText(rightTxt, rightEdgeX, cy);
 
-        const timeLabel = bn.finishTime !== null ? `${bn.finishTime.toFixed(2)}s` : '';
-        const rightTxt = bn.gap ? `${timeLabel} · ${bn.gap}` : timeLabel;
-        ctx.font = `600 ${13 * k}px "JetBrains Mono", monospace`;
-        ctx.textAlign = 'right';
-        ctx.fillStyle = '#68d391';
-        ctx.fillText(rightTxt, bx + boxW - 14 * k, cy);
-      }
+      const nameStartX = ordX + ordW + 10 * k;
+      const maxNameW = Math.max(36 * k, rightEdgeX - rightW - 12 * k - nameStartX);
+      ctx.font = `700 ${15 * k}px "Outfit", "Plus Jakarta Sans", system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#f4f1e8';
+      const safeName = this.truncateCanvasText(ctx, bn.name.toUpperCase(), maxNameW);
+      ctx.fillText(safeName, nameStartX, cy);
       ctx.restore();
     }
 
@@ -6326,6 +7122,19 @@ class MarbleRushApp {
 
       if (this.raceState === 'RACING') {
         this.measureBallProgressAndFinishes(FIXED_DT);
+        if (!this.startCommentarySent && this.raceElapsedTime >= 0.45 && this.balls.length > 0) {
+          this.startCommentarySent = true;
+          const sortedStart = [...this.balls].sort((a, b) => a.rank - b.rank);
+          const lead = sortedStart[0];
+          const second = sortedStart[1];
+          const leadDesc = `${describeBallColorName(lead.color)} ball (${lead.name})`;
+          const chaserDesc = second ? `${describeBallColorName(second.color)} ball (${second.name})` : 'the pack';
+          this.triggerRaceCommentary(
+            'race_start',
+            `The starting gates drop! ${this.balls.length} marbles launch down ${this.describeTrackZone(2)}; ${leadDesc} jumps ahead early chased closely by ${chaserDesc}.`,
+            5
+          );
+        }
         this.replay.captureFrame(
           this.raceElapsedTime,
           this.balls,
@@ -6409,6 +7218,16 @@ class MarbleRushApp {
             });
             if (intensity >= 0.86) {
               this.triggerLiveDirectorMoment('pack_clash', b1.rank <= b2.rank ? b1 : b2);
+            }
+            if (relSpeed > 6.6 || (relSpeed > 5.4 && (b1.rank <= 3 || b2.rank <= 3))) {
+              const pri = b1.rank <= b2.rank ? b1 : b2;
+              const sec = b1.rank <= b2.rank ? b2 : b1;
+              const zone = this.describeTrackZone((pri.progressMeters + sec.progressMeters) * 0.5);
+              this.triggerRaceCommentary(
+                'collision',
+                `Heavy ball-to-ball collision in ${zone}: ${describeBallColorName(pri.color)} ball "${pri.name}" (#${pri.rank}) collides with ${describeBallColorName(sec.color)} ball "${sec.name}" (#${sec.rank}) at ${relSpeed.toFixed(1)} m/s impact speed.`,
+                pri.rank <= 3 ? 4 : 3
+              );
             }
           }
         }
@@ -6498,6 +7317,15 @@ class MarbleRushApp {
             if (intensity >= 0.85) {
               this.triggerLiveDirectorMoment(isAir ? 'big_air' : 'hurdle_hit', ball);
             }
+            if (speed > 7.8 || (isAir && speed > 5.8 && ball.rank <= 5)) {
+              const zone = this.describeTrackZone(ball.progressMeters);
+              const obsDesc = (labelMap[otherMeta.subType] || 'obstacle').toLowerCase();
+              this.triggerRaceCommentary(
+                isAir ? 'big_air' : 'hurdle_hit',
+                `${describeBallColorName(ball.color)} ball "${ball.name}" (currently #${ball.rank}) hits a ${obsDesc} in ${zone} at ${speed.toFixed(1)} m/s.`,
+                ball.rank <= 3 ? 3 : 2
+              );
+            }
           }
         }
         this.addCamShake(ball, Math.min(0.24, speed * 0.015));
@@ -6519,23 +7347,27 @@ class MarbleRushApp {
               s: ball.progressMeters,
               worldPos: ball.worldPos,
             });
+            if (speed > 11.4 && ball.rank <= 4) {
+              const zone = this.describeTrackZone(ball.progressMeters);
+              this.triggerRaceCommentary(
+                'collision',
+                `Hard barrier impact in ${zone}: ${describeBallColorName(ball.color)} ball "${ball.name}" slams the outer wall at ${speed.toFixed(1)} m/s while running #${ball.rank}.`,
+                3
+              );
+            }
           }
         }
         if (speed > 8.0) this.addCamShake(ball, 0.1);
       }
     } else if (otherMeta.kind === 'track') {
-      // Only play landing thud / whoosh if ball drops hard onto track surface
+      // Physical track-deck landing thud when ball drops hard onto surface (no wind whoosh)
       if (Math.abs(lv.y) > 4.2) {
-        const s = Math.min(1, Math.abs(lv.y) / 14);
+        const s = Math.min(1, Math.abs(lv.y) / 13);
         this.sound.playWallHit(s);
         if (this.raceState === 'RACING') {
           this.replay.recordAudioCue(this.raceElapsedTime, 'wall', s);
         }
         if (Math.abs(lv.y) > 6.2) {
-          this.sound.playWhoosh(0.65);
-          if (this.raceState === 'RACING') {
-            this.replay.recordAudioCue(this.raceElapsedTime, 'whoosh', 0.65);
-          }
           this.addCamShake(ball, 0.16);
         }
       }
@@ -6761,10 +7593,23 @@ class MarbleRushApp {
             s: finishS,
             worldPos: ball.worldPos,
           });
+          this.triggerRaceCommentary(
+            'finish',
+            `Checkered flag! The ${describeBallColorName(ball.color)} ball (${ball.name}) crosses the finish line first to win in ${ball.finishTime.toFixed(2)} seconds at ${ball.peakSpeed.toFixed(1)} m/s peak speed!`,
+            10
+          );
           this.dom.btnViewResults.classList.remove('hidden');
           if (this.dom.btnCinematicReplay) {
             this.dom.btnCinematicReplay.classList.remove('hidden');
           }
+        } else if (ball.finishRank === 2 && winnerTime !== null && ball.finishTime - winnerTime < 0.45) {
+          const wBall = firstWinner;
+          const gapSec = Math.max(0.01, ball.finishTime - winnerTime).toFixed(2);
+          this.triggerRaceCommentary(
+            'finish',
+            `Photo finish for second place! The ${describeBallColorName(ball.color)} ball edges into 2nd just ${gapSec} seconds behind the victorious ${wBall ? describeBallColorName(wBall.color) : 'winning'} ball!`,
+            6
+          );
         }
       }
     }
@@ -6839,6 +7684,14 @@ class MarbleRushApp {
           worldPos: newLeader.worldPos,
         });
         this.triggerLiveDirectorMoment('lead_change', newLeader);
+        const oldLeader = this.balls[oldLeaderId];
+        const zone = this.describeTrackZone(newLeader.progressMeters);
+        const passedDesc = oldLeader ? `passing ${describeBallColorName(oldLeader.color)} ball "${oldLeader.name}"` : 'taking the top spot';
+        this.triggerRaceCommentary(
+          'lead_change',
+          `Lead change in ${zone}! ${describeBallColorName(newLeader.color)} ball "${newLeader.name}" surges ahead at ${newLeader.currentSpeed.toFixed(1)} m/s, ${passedDesc} (${Math.round((newLeader.progressMeters / Math.max(1, finishS)) * 100)}% race distance).`,
+          5
+        );
       } else {
         this.lastLeaderId = newLeader.id;
       }
@@ -6988,6 +7841,8 @@ class MarbleRushApp {
     this.lastReplayWinnerBannerId = -1;
     this.replayAnnouncedBallIds = new Set();
     this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
     this.endLeaderboardActive = false;
     this.endLeaderboardSorted = [];
     this.hideCanvasOverlay();
@@ -7127,6 +7982,11 @@ class MarbleRushApp {
 
     this.sound.updateRollingBed(0, false);
     this.sound.updateCrowdExcitement(0, false);
+    this.sound.stopCommentary();
+    this.renderCommentaryCaption('', { hidden: true });
+    this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
     this.raceState = this.winnerAnnounced || this.finishedCount > 0 ? 'FINISHED' : 'READY';
     this.cameraMode = this.preReplayCameraMode || 'overview';
     this.replay.isPlaying = false;
@@ -7220,7 +8080,7 @@ class MarbleRushApp {
       this.syncUiState();
     }
 
-    // Trigger captured Web Audio SFX synchronized with replay timeline
+    // Trigger captured Web Audio SFX & recorded AI Commentary synchronized with replay timeline
     let cuesPlayed = 0;
     for (let i = 0; i < this.replay.audioCues.length; i++) {
       const cue = this.replay.audioCues[i];
@@ -7228,6 +8088,17 @@ class MarbleRushApp {
         this.playReplayAudioCue(cue);
         cuesPlayed++;
         if (cuesPlayed >= 3) break;
+      }
+    }
+    if (this.sound.commentaryEnabled && this.replay.commentaryClips.length > 0) {
+      for (let i = 0; i < this.replay.commentaryClips.length; i++) {
+        const clip = this.replay.commentaryClips[i];
+        if (clip.time > this.replay.prevTimeForAudio && clip.time <= nextT) {
+          this.sound.playCommentaryBuffer(clip.audioBuffer);
+          const durMs = Math.max(2200, Math.round(clip.audioBuffer.duration * 1000) + 650);
+          this.commentary.showCaption(clip.text, { isError: false, durationMs });
+          break;
+        }
       }
     }
     this.replay.prevTimeForAudio = nextT;
@@ -7263,6 +8134,8 @@ class MarbleRushApp {
       this.crowdExcitement = 1.0;
       this.sound.playCrowdCheerSpike(0.95);
       this.activeFinishBanners = [];
+      this.finishBannerQueue = [];
+      this.finishBannerLockUntil = 0;
       this.showCanvasEndLeaderboard(sorted);
       if (this.isRecordingGameplayPass && this.recorder.isRecording) {
         this.gameplayReplayEndHold = 2.8;
@@ -7422,8 +8295,12 @@ class MarbleRushApp {
     this.replay.prevTimeForAudio = clamped;
     this.replay.activeShotIdx = -1;
     this.directorState.justCut = true;
+    this.sound.stopCommentary();
+    this.renderCommentaryCaption('', { hidden: true });
     this.lastReplayWinnerBannerId = -1;
     this.activeFinishBanners = [];
+    this.finishBannerQueue = [];
+    this.finishBannerLockUntil = 0;
     this.replayAnnouncedBallIds = new Set();
     for (const b of this.balls) {
       if (b.finishTime !== null && b.finishTime <= clamped + 0.04) {
@@ -8267,6 +9144,8 @@ class MarbleRushApp {
       this.physicsDebugMesh.visible = false;
     }
 
+    this.updateBallNameLabels();
+
     const hasHudOverlay =
       (this.countdownMesh && this.countdownMesh.visible) ||
       (this.hudOverlayMesh && this.hudOverlayMesh.visible);
@@ -8401,15 +9280,17 @@ class MarbleRushApp {
           }
         }
 
-        // Expire temporary per-ball finisher notification banners cleanly
+        // Cycle single non-overlapping finisher banner cleanly through queue
         if (this.activeFinishBanners.length > 0 && (this.raceState === 'RACING' || this.raceState === 'REPLAY' || this.raceState === 'FINISHED')) {
           let bannerChanged = false;
-          for (let i = this.activeFinishBanners.length - 1; i >= 0; i--) {
-            this.activeFinishBanners[i].remaining -= dt;
-            if (this.activeFinishBanners[i].remaining <= 0) {
-              this.activeFinishBanners.splice(i, 1);
-              bannerChanged = true;
+          this.activeFinishBanners[0].remaining -= dt;
+          if (this.activeFinishBanners[0].remaining <= 0) {
+            if (this.finishBannerQueue.length > 0) {
+              this.activeFinishBanners = [this.finishBannerQueue.shift()];
+            } else {
+              this.activeFinishBanners = [];
             }
+            bannerChanged = true;
           }
           if (bannerChanged) {
             this.renderBroadcastHudCanvas(true);
@@ -8533,6 +9414,74 @@ class MarbleRushApp {
         metric.classList.remove('finished');
       }
     }
+  }
+
+  renderCommentaryCaption(text, { hidden = false, isError = false } = {}) {
+    if (!this.dom?.commentaryBanner || !this.dom?.commentaryText) return;
+    if (hidden || !text) {
+      this.dom.commentaryBanner.classList.add('hidden');
+      this.dom.commentaryBanner.classList.remove('is-error');
+      this.dom.commentaryText.textContent = '';
+      return;
+    }
+    this.dom.commentaryText.textContent = text;
+    this.dom.commentaryBanner.classList.toggle('is-error', Boolean(isError));
+    if (this.dom.commentaryTag) {
+      this.dom.commentaryTag.textContent = isError ? 'NOTICE' : 'LIVE';
+    }
+    this.dom.commentaryBanner.classList.remove('hidden');
+  }
+
+  describeTrackZone(s) {
+    const L = Math.max(10, this.config.distanceMeters || 100);
+    const frac = THREE.MathUtils.clamp(s / L, 0, 1);
+    if (frac < 0.08) return 'the opening stretch';
+    if (frac > 0.88) return 'the final sprint toward the checkered line';
+    if (this.trackData?.stations?.length > 4) {
+      const st = getStationAtS(this.trackData, s);
+      const stNext = getStationAtS(this.trackData, Math.min(L, s + 4.5));
+      const turnDot = this._v4.subVectors(stNext.T, st.T).dot(st.R);
+      if (st.T.y < -0.26) return 'the steep downhill chute';
+      if (Math.abs(turnDot) > 0.16) {
+        return turnDot > 0 ? 'the sweeping right corner' : 'the sweeping left corner';
+      }
+    }
+    const trackTypeNames = {
+      spiral: 'the helix spiral',
+      zigzag: 'the switchback bend',
+      rollercoaster: 'the wave drop',
+      chicane: 'the technical chicane',
+      split: 'the split lane',
+    };
+    return trackTypeNames[this.config.trackType] || 'the mid-track straight';
+  }
+
+  triggerRaceCommentary(eventType, summary, priority = 2) {
+    if (!this.commentary || !this.commentary.enabled || this.raceState !== 'RACING') return;
+    const mapCfg = TERRITORIES[this.config.mapPreset] || TERRITORIES.expedition;
+    const trackNames = {
+      straight: 'Straight Run',
+      curved: 'Sweeping Curves',
+      spiral: 'Helix Spiral',
+      multilane: 'Multi-Lane Circuit',
+      zigzag: 'Zig-Zag Switchback',
+      rollercoaster: 'Drop & Wave',
+      chicane: 'Technical Chicanes',
+      split: 'Twin Split Track',
+      mixed: 'Mixed Obstacle Course',
+    };
+    const raceTime = this.raceElapsedTime;
+    this.commentary.enqueue({
+      eventType,
+      summary,
+      priority,
+      raceTime,
+      trackName: trackNames[this.config.trackType] || 'Championship Course',
+      mapName: mapCfg.label || 'Arena',
+      onClipReady: (clip) => {
+        this.replay.recordCommentaryClip(clip.time, clip.text, clip.audioBuffer);
+      },
+    });
   }
 
   showWinnerToast(ball, winnerTime = null) {
@@ -8695,19 +9644,38 @@ class MarbleRushApp {
         gapStr = `+${(ball.finishTime - winnerTime).toFixed(2)}s`;
       }
 
-      tr.innerHTML = `
-        <td class="mono">${ball.rank}</td>
-        <td>
-          <div class="results-ball-cell">
-            <span class="swatch-dot" style="background-color: ${ball.color}"></span>
-            <span>${ball.name}</span>
-          </div>
-        </td>
-        <td class="mono">${Math.min(this.config.distanceMeters, ball.progressMeters).toFixed(1)} m</td>
-        <td class="mono">${ball.peakSpeed.toFixed(1)} m/s</td>
-        <td class="mono">${timeStr}</td>
-        <td class="mono">${gapStr}</td>
-      `;
+      const tdRank = document.createElement('td');
+      tdRank.className = 'mono';
+      tdRank.textContent = String(ball.rank);
+
+      const tdBall = document.createElement('td');
+      const cellDiv = document.createElement('div');
+      cellDiv.className = 'results-ball-cell';
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch-dot';
+      swatch.style.backgroundColor = ball.color;
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = ball.name;
+      cellDiv.append(swatch, nameSpan);
+      tdBall.appendChild(cellDiv);
+
+      const tdDist = document.createElement('td');
+      tdDist.className = 'mono';
+      tdDist.textContent = `${Math.min(this.config.distanceMeters, ball.progressMeters).toFixed(1)} m`;
+
+      const tdSpeed = document.createElement('td');
+      tdSpeed.className = 'mono';
+      tdSpeed.textContent = `${ball.peakSpeed.toFixed(1)} m/s`;
+
+      const tdTime = document.createElement('td');
+      tdTime.className = 'mono';
+      tdTime.textContent = timeStr;
+
+      const tdGap = document.createElement('td');
+      tdGap.className = 'mono';
+      tdGap.textContent = gapStr;
+
+      tr.append(tdRank, tdBall, tdDist, tdSpeed, tdTime, tdGap);
       tbody.appendChild(tr);
     }
 
@@ -8796,6 +9764,17 @@ class MarbleRushApp {
     if (this.dom.btnToggleSound) {
       this.dom.btnToggleSound.textContent = this.sound.enabled ? 'Sound' : 'Sound Off';
       this.dom.btnToggleSound.classList.toggle('active', this.sound.enabled);
+    }
+    if (this.dom.btnToggleCommentary) {
+      this.dom.btnToggleCommentary.textContent = this.commentary.enabled ? 'Announcer' : 'Announcer Off';
+      this.dom.btnToggleCommentary.classList.toggle('active', this.commentary.enabled);
+    }
+    if (this.dom.commentaryBanner) {
+      const showFreeBar =
+        (!isReplay && this.cameraMode === 'free') ||
+        (isReplay && !this.replay.autoDirector && !this.isRecordingGameplayPass);
+      this.dom.commentaryBanner.classList.toggle('has-freecam', !isReplay && showFreeBar);
+      this.dom.commentaryBanner.classList.toggle('in-replay', isReplay);
     }
     if (this.dom.selectQuality) {
       this.dom.selectQuality.value = this.qualityPreset;
@@ -8900,6 +9879,8 @@ class MarbleRushApp {
 
     for (let i = 0; i < this.config.ballCount; i++) {
       const hex = this.ballColors[i] || '#f59e0b';
+      const defaultName = this.getDefaultBallName(i);
+      const curName = this.getBallName(i);
       const row = document.createElement('div');
       row.className = 'ball-row';
 
@@ -8910,21 +9891,61 @@ class MarbleRushApp {
       colorInput.type = 'color';
       colorInput.className = 'ball-color-input';
       colorInput.value = hex;
-      colorInput.setAttribute('aria-label', `Color for Ball #${i + 1}`);
-      colorInput.addEventListener('input', (e) => {
-        this.updateSingleBallColor(i, e.target.value, colorInput, hexLabel);
-      });
+      colorInput.setAttribute('aria-label', `Color for ${curName}`);
 
-      const idLabel = document.createElement('span');
-      idLabel.className = 'ball-id-label';
-      idLabel.textContent = `Ball #${String(i + 1).padStart(2, '0')}`;
+      const indexTag = document.createElement('span');
+      indexTag.className = 'ball-index-tag mono';
+      indexTag.textContent = `#${String(i + 1).padStart(2, '0')}`;
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'ball-name-input';
+      nameInput.maxLength = 20;
+      nameInput.value = curName;
+      nameInput.placeholder = defaultName;
+      nameInput.setAttribute('aria-label', `Name for Ball #${i + 1}`);
 
       const hexLabel = document.createElement('span');
       hexLabel.className = 'ball-hex-label mono';
       hexLabel.textContent = hex.toUpperCase();
 
-      left.append(colorInput, idLabel, hexLabel);
-      row.append(left);
+      colorInput.addEventListener('input', (e) => {
+        this.updateSingleBallColor(i, e.target.value, colorInput, hexLabel);
+      });
+
+      nameInput.addEventListener('input', (e) => {
+        const raw = String(e.target.value || '').slice(0, 20);
+        const trimmed = raw.trim();
+        this.ballNames[i] = trimmed || defaultName;
+        const resolved = this.getBallName(i);
+        if (this.balls[i]) {
+          this.balls[i].name = resolved;
+          this.updateBallLabelTexture(this.balls[i]);
+        }
+        colorInput.setAttribute('aria-label', `Color for ${resolved}`);
+        this.updateLeaderboard(false);
+        this.updateTelemetryHud();
+        this.renderBroadcastHudCanvas(true);
+      });
+
+      nameInput.addEventListener('blur', () => {
+        const resolved = this.getBallName(i);
+        this.ballNames[i] = resolved;
+        nameInput.value = resolved;
+        if (this.balls[i]) {
+          this.balls[i].name = resolved;
+          this.updateBallLabelTexture(this.balls[i]);
+        }
+      });
+
+      nameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          nameInput.blur();
+        }
+      });
+
+      left.append(colorInput, indexTag, nameInput);
+      row.append(left, hexLabel);
       container.appendChild(row);
     }
   }
@@ -8942,11 +9963,13 @@ class MarbleRushApp {
         if (this.balls[existingIdx]) {
           this.balls[existingIdx].color = prevColor;
           setRichMarbleColor(this.balls[existingIdx].mesh.material.color, prevColor);
+          this.updateBallLabelTexture(this.balls[existingIdx]);
         }
         this.ballColors[index] = normalized;
         if (this.balls[index]) {
           this.balls[index].color = normalized;
           setRichMarbleColor(this.balls[index].mesh.material.color, normalized);
+          this.updateBallLabelTexture(this.balls[index]);
         }
         this.renderBallColorEditor();
         this.updateLeaderboard(false);
@@ -8959,6 +9982,7 @@ class MarbleRushApp {
     if (this.balls[index]) {
       this.balls[index].color = normalized;
       setRichMarbleColor(this.balls[index].mesh.material.color, normalized);
+      this.updateBallLabelTexture(this.balls[index]);
     }
     this.updateLeaderboard(false);
   }
@@ -9008,6 +10032,7 @@ class MarbleRushApp {
     this.dom.inputAllowDuplicates.checked = this.config.allowDuplicateColors;
     if (this.dom.inputMusicEnabled) this.dom.inputMusicEnabled.checked = this.sound.musicEnabled;
     if (this.dom.inputSoundEnabled) this.dom.inputSoundEnabled.checked = this.sound.enabled;
+    if (this.dom.inputCommentaryEnabled) this.dom.inputCommentaryEnabled.checked = this.commentary.enabled;
   }
 
   bindUiEvents() {
@@ -9053,6 +10078,9 @@ class MarbleRushApp {
     this.dom.btnRestart.addEventListener('click', () => this.restartRace());
     this.dom.btnGenerateTrack.addEventListener('click', () => this.generateNewTrack());
     this.dom.btnRandomizeColors.addEventListener('click', () => this.randomizeBallColors());
+    if (this.dom.btnResetBallNames) {
+      this.dom.btnResetBallNames.addEventListener('click', () => this.resetBallNames());
+    }
     this.dom.btnResetSettings.addEventListener('click', () => this.resetSettings());
 
     this.dom.btnViewResults.addEventListener('click', () => this.openResultsModal());
@@ -9082,7 +10110,10 @@ class MarbleRushApp {
     const applySoundToggle = (enabled) => {
       this.sound.enabled = Boolean(enabled);
       if (this.sound.enabled) this.sound.ensureContext(true);
-      else this.sound.updateRollingBed(0, false);
+      else {
+        this.sound.updateRollingBed(0, false);
+        this.sound.updateCrowdExcitement(0, false);
+      }
       if (this.dom.inputSoundEnabled) this.dom.inputSoundEnabled.checked = this.sound.enabled;
       this.syncUiState();
     };
@@ -9092,6 +10123,34 @@ class MarbleRushApp {
     if (this.dom.inputSoundEnabled) {
       this.dom.inputSoundEnabled.addEventListener('change', (e) => {
         applySoundToggle(e.target.checked);
+      });
+    }
+
+    const applyCommentaryToggle = (enabled) => {
+      this.commentary.setEnabled(Boolean(enabled));
+      if (this.commentary.enabled) this.sound.ensureContext(true);
+      if (this.dom.inputCommentaryEnabled) {
+        this.dom.inputCommentaryEnabled.checked = this.commentary.enabled;
+      }
+      this.syncUiState();
+    };
+    if (this.dom.btnToggleCommentary) {
+      this.dom.btnToggleCommentary.addEventListener('click', () => {
+        applyCommentaryToggle(!this.commentary.enabled);
+      });
+    }
+    if (this.dom.inputCommentaryEnabled) {
+      this.dom.inputCommentaryEnabled.addEventListener('change', (e) => {
+        applyCommentaryToggle(e.target.checked);
+      });
+    }
+    this.commentary.checkAvailability();
+
+    if (this.dom.inputShowBallLabels) {
+      this.showBallLabels = Boolean(this.dom.inputShowBallLabels.checked);
+      this.dom.inputShowBallLabels.addEventListener('change', (e) => {
+        this.showBallLabels = Boolean(e.target.checked);
+        this.updateBallNameLabels();
       });
     }
 
@@ -9110,6 +10169,9 @@ class MarbleRushApp {
         }
         used.add(cand);
         this.ballColors.push(cand);
+      }
+      while (this.ballNames.length < clamped) {
+        this.ballNames.push(this.getDefaultBallName(this.ballNames.length));
       }
       this.syncSettingsControlsToDom();
       this.renderBallColorEditor();
@@ -9273,6 +10335,7 @@ class MarbleRushApp {
         for (let i = 0; i < this.balls.length; i++) {
           this.balls[i].color = this.ballColors[i];
           setRichMarbleColor(this.balls[i].mesh.material.color, this.ballColors[i]);
+          this.updateBallLabelTexture(this.balls[i]);
         }
         this.syncSettingsControlsToDom();
         this.renderBallColorEditor();
@@ -9293,6 +10356,7 @@ class MarbleRushApp {
             if (this.balls[i]) {
               this.balls[i].color = c;
               setRichMarbleColor(this.balls[i].mesh.material.color, c);
+              this.updateBallLabelTexture(this.balls[i]);
             }
           }
           used.add(c);

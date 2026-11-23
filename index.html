@@ -116,6 +116,15 @@
             >
               Sound
             </button>
+            <button
+              id="btn-toggle-commentary"
+              class="btn btn-icon active"
+              type="button"
+              title="Toggle Live Race Commentary"
+              aria-label="Toggle Live Race Commentary"
+            >
+              Announcer
+            </button>
             <select
               id="select-quality"
               class="form-select form-select-compact form-select-topbar"
@@ -449,7 +458,10 @@
 
             <div class="field-group ball-tools-row">
               <button id="btn-randomize-colors" class="btn btn-surface btn-sm flex-1" type="button">
-                Randomize Ball Colours
+                Randomize Colours
+              </button>
+              <button id="btn-reset-ball-names" class="btn btn-surface btn-sm" type="button">
+                Reset Names
               </button>
             </div>
 
@@ -464,13 +476,21 @@
               </label>
               <label class="checkbox-label" for="input-sound-enabled">
                 <input id="input-sound-enabled" type="checkbox" checked />
-                <span>Collision &amp; rolling sound effects</span>
+                <span>Collision, crowd &amp; stadium sound effects</span>
+              </label>
+              <label class="checkbox-label" for="input-commentary-enabled">
+                <input id="input-commentary-enabled" type="checkbox" checked />
+                <span>Live broadcast voice commentary</span>
+              </label>
+              <label class="checkbox-label" for="input-show-ball-labels">
+                <input id="input-show-ball-labels" type="checkbox" checked />
+                <span>Show names above balls</span>
               </label>
             </div>
 
             <div class="field-group">
               <div class="field-header">
-                <label>Individual Ball Colours</label>
+                <label>Ball Names &amp; Colours</label>
                 <span id="ball-count-caption" class="field-readout mono">10 balls</span>
               </div>
               <div id="ball-list-container" class="ball-list"></div>
@@ -512,6 +532,12 @@
           <button id="btn-free-focus-leader" class="cam-btn" type="button">Snap to Pack</button>
           <button id="btn-free-center-track" class="cam-btn" type="button">Center Track</button>
         </div>
+      </div>
+
+      <!-- Live Race Commentary Caption Bar -->
+      <div id="commentary-banner" class="commentary-banner hidden" role="status" aria-live="polite">
+        <span id="commentary-tag" class="commentary-tag mono">LIVE</span>
+        <span id="commentary-text" class="commentary-text"></span>
       </div>
 
       <!-- Compact Bottom Camera Selector Dock -->
